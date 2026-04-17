@@ -255,6 +255,18 @@ pub fn add_mixed_audio_branch(
     let (sys_src, sys_tail) = build_audio_preproc("sys", monitor_source)?;
     let (mic_src, mic_tail) = build_audio_preproc("mic", mic_source)?;
 
+    // Аттенюация перед суммированием, чтобы пики двух источников не клипили.
+    let sys_vol = gst::ElementFactory::make("volume")
+        .name("sys_vol")
+        .property("volume", 0.7f64)
+        .build()
+        .context("volume missing")?;
+    let mic_vol = gst::ElementFactory::make("volume")
+        .name("mic_vol")
+        .property("volume", 1.0f64)
+        .build()
+        .context("volume missing")?;
+
     let mixer = gst::ElementFactory::make("audiomixer")
         .name("amix")
         .build()
@@ -281,11 +293,13 @@ pub fn add_mixed_audio_branch(
         &sys_tail.resample,
         &sys_tail.rate,
         &sys_tail.capsf,
+        &sys_vol,
         &mic_src,
         &mic_tail.convert,
         &mic_tail.resample,
         &mic_tail.rate,
         &mic_tail.capsf,
+        &mic_vol,
         &mixer,
         &mix_capsf,
         &aqueue,
@@ -298,6 +312,7 @@ pub fn add_mixed_audio_branch(
         &sys_tail.resample,
         &sys_tail.rate,
         &sys_tail.capsf,
+        &sys_vol,
     ])?;
     gst::Element::link_many(&[
         &mic_src,
@@ -305,10 +320,11 @@ pub fn add_mixed_audio_branch(
         &mic_tail.resample,
         &mic_tail.rate,
         &mic_tail.capsf,
+        &mic_vol,
     ])?;
 
-    sys_tail.capsf.link(&mixer)?;
-    mic_tail.capsf.link(&mixer)?;
+    sys_vol.link(&mixer)?;
+    mic_vol.link(&mixer)?;
 
     gst::Element::link_many(&[&mixer, &mix_capsf, &aqueue, &aenc])?;
 
