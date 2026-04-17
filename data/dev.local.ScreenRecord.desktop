@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Screen Record
+Comment=Record your screen with system audio and microphone
+Exec=screen_record
+Icon=dev.local.ScreenRecord
+Terminal=false
+Type=Application
+Categories=AudioVideo;Recorder;
+StartupNotify=true
+StartupWMClass=dev.local.ScreenRecord

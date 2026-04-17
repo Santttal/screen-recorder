@@ -1,0 +1,20 @@
+[package]
+name = "screen_record"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+gtk4 = { version = "0.6", features = ["v4_6"] }
+libadwaita = { version = "0.3", features = ["v1_1"] }
+gstreamer = "0.20"
+gstreamer-pbutils = "0.20"
+ashpd = { version = "0.4", default-features = false, features = ["gtk4", "tokio"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "sync"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+anyhow = "1"
+thiserror = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+directories = "5"
