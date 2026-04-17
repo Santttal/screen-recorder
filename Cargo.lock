@@ -1814,6 +1814,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "ashpd",
+ "async-channel",
  "directories",
  "gstreamer",
  "gstreamer-pbutils",

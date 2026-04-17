@@ -1,14 +1,24 @@
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use adw::prelude::*;
 use adw::Application;
+use async_channel::{Receiver, Sender};
+use gtk::gio;
 use gtk::glib;
 use gstreamer as gst;
 use libadwaita as adw;
 use gtk4 as gtk;
+use tokio::runtime::Runtime;
 
 mod config;
 mod portal;
 mod recorder;
 mod ui;
+
+use ui::events::{RecorderEvent, UiCommand};
+use ui::style;
+use ui::window::AppWindow;
 
 const APP_ID: &str = "dev.local.ScreenRecord";
 
@@ -20,11 +30,75 @@ fn main() -> glib::ExitCode {
     gst::init().expect("failed to initialize GStreamer");
     tracing::info!(version = gst::version_string().as_str(), "gstreamer initialized");
 
+    let runtime = Runtime::new().expect("failed to create tokio runtime");
+
+    let (cmd_tx, cmd_rx) = async_channel::unbounded::<UiCommand>();
+    let (evt_tx, evt_rx) = async_channel::unbounded::<RecorderEvent>();
+
+    runtime.spawn(recorder::run(cmd_rx, evt_tx.clone()));
+
     let app = Application::builder().application_id(APP_ID).build();
 
-    app.connect_activate(|_app| {
-        tracing::info!("application activated (window TBD in phase 2)");
+    app.connect_startup(|_| {
+        style::load_css();
     });
 
-    app.run()
+    let evt_rx_cell: Rc<RefCell<Option<Receiver<RecorderEvent>>>> =
+        Rc::new(RefCell::new(Some(evt_rx)));
+    let cmd_tx_for_window = cmd_tx.clone();
+
+    app.connect_activate(move |app| {
+        register_app_actions(app, &cmd_tx);
+
+        let window = AppWindow::new(app, cmd_tx_for_window.clone());
+        wire_window_actions(app, &window);
+
+        if let Some(rx) = evt_rx_cell.borrow_mut().take() {
+            window.spawn_event_loop(rx);
+        }
+
+        window.present();
+    });
+
+    let exit_code = app.run();
+    drop(runtime);
+    exit_code
+}
+
+fn register_app_actions(app: &Application, cmd_tx: &Sender<UiCommand>) {
+    let act_quit = gio::SimpleAction::new("quit", None);
+    let app_weak = app.downgrade();
+    let tx = cmd_tx.clone();
+    act_quit.connect_activate(move |_, _| {
+        let _ = tx.send_blocking(UiCommand::Quit);
+        if let Some(app) = app_weak.upgrade() {
+            app.quit();
+        }
+    });
+    app.add_action(&act_quit);
+    app.set_accels_for_action("app.quit", &["<Primary>q"]);
+
+    let act_prefs = gio::SimpleAction::new("preferences", None);
+    act_prefs.connect_activate(|_, _| {
+        tracing::info!("preferences: todo (phase 7)");
+    });
+    app.add_action(&act_prefs);
+}
+
+fn wire_window_actions(app: &Application, window: &Rc<AppWindow>) {
+    let act_about = gio::SimpleAction::new("about", None);
+    let parent = window.window().clone();
+    act_about.connect_activate(move |_, _| {
+        let about = gtk::AboutDialog::builder()
+            .program_name("Screen Record")
+            .logo_icon_name("dev.local.ScreenRecord")
+            .version(env!("CARGO_PKG_VERSION"))
+            .comments("Запись экрана со звуком на Linux")
+            .license_type(gtk::License::Gpl30)
+            .transient_for(&parent)
+            .modal(true)
+            .build();
+        about.present();
+    });
+    app.add_action(&act_about);
 }

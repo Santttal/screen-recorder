@@ -1,0 +1,7 @@
+.recording-dot {
+    color: #e01b24;
+}
+
+.timer-label {
+    font-feature-settings: "tnum";
+}
