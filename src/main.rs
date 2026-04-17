@@ -16,7 +16,9 @@ mod portal;
 mod recorder;
 mod ui;
 
+use config::SharedSettings;
 use ui::events::{RecorderEvent, UiCommand};
+use ui::preferences::PreferencesWindow;
 use ui::style;
 use ui::window::AppWindow;
 
@@ -32,10 +34,12 @@ fn main() -> glib::ExitCode {
 
     let runtime = Runtime::new().expect("failed to create tokio runtime");
 
+    let settings: SharedSettings = config::shared(config::load());
+
     let (cmd_tx, cmd_rx) = async_channel::unbounded::<UiCommand>();
     let (evt_tx, evt_rx) = async_channel::unbounded::<RecorderEvent>();
 
-    runtime.spawn(recorder::run(cmd_rx, evt_tx.clone()));
+    runtime.spawn(recorder::run(cmd_rx, evt_tx.clone(), settings.clone()));
 
     let app = Application::builder().application_id(APP_ID).build();
 
@@ -48,6 +52,7 @@ fn main() -> glib::ExitCode {
     let cmd_tx_for_window = cmd_tx.clone();
     let evt_tx_for_window = evt_tx.clone();
 
+    let settings_for_window = settings.clone();
     app.connect_activate(move |app| {
         register_app_actions(app, &cmd_tx);
 
@@ -55,8 +60,9 @@ fn main() -> glib::ExitCode {
             app,
             cmd_tx_for_window.clone(),
             evt_tx_for_window.clone(),
+            settings_for_window.clone(),
         );
-        wire_window_actions(app, &window);
+        wire_window_actions(app, &window, settings_for_window.clone());
 
         if let Some(rx) = evt_rx_cell.borrow_mut().take() {
             window.spawn_event_loop(rx);
@@ -83,14 +89,9 @@ fn register_app_actions(app: &Application, cmd_tx: &Sender<UiCommand>) {
     app.add_action(&act_quit);
     app.set_accels_for_action("app.quit", &["<Primary>q"]);
 
-    let act_prefs = gio::SimpleAction::new("preferences", None);
-    act_prefs.connect_activate(|_, _| {
-        tracing::info!("preferences: todo (phase 7)");
-    });
-    app.add_action(&act_prefs);
 }
 
-fn wire_window_actions(app: &Application, window: &Rc<AppWindow>) {
+fn wire_window_actions(app: &Application, window: &Rc<AppWindow>, settings: SharedSettings) {
     let act_about = gio::SimpleAction::new("about", None);
     let parent = window.window().clone();
     act_about.connect_activate(move |_, _| {
@@ -106,4 +107,11 @@ fn wire_window_actions(app: &Application, window: &Rc<AppWindow>) {
         about.present();
     });
     app.add_action(&act_about);
+
+    let act_prefs = gio::SimpleAction::new("preferences", None);
+    let parent_window = window.window().clone();
+    act_prefs.connect_activate(move |_, _| {
+        PreferencesWindow::present(&parent_window, settings.clone());
+    });
+    app.add_action(&act_prefs);
 }

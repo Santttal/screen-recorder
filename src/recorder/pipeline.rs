@@ -8,6 +8,7 @@ use gstreamer::prelude::*;
 use gtk::glib;
 use gtk4 as gtk;
 
+use crate::config::{AudioMode, Settings};
 use crate::recorder::audio::{detect_audio_devices, ensure_source_volume_full, AudioDevices};
 use crate::ui::events::RecorderEvent;
 
@@ -19,23 +20,35 @@ pub struct RecordRequest {
     pub output_path: PathBuf,
     pub fd: RawFd,
     pub node_id: u32,
+    pub settings: Settings,
 }
 
 pub fn build_pipeline(req: &RecordRequest) -> Result<gst::Pipeline> {
     if !req.capture_screen {
         return Err(anyhow!("capture_screen=false не поддерживается на MVP"));
     }
-    let pipeline = build_video_pipeline(req.fd, req.node_id, &req.output_path)?;
+    let pipeline = build_video_pipeline(req.fd, req.node_id, &req.output_path, &req.settings)?;
 
     if req.capture_system_audio || req.capture_mic {
         let AudioDevices {
             monitor_source,
             mic_source,
         } = detect_audio_devices()?;
+        let audio_bitrate_bps = (req.settings.audio_bitrate as i32).saturating_mul(1000);
+        let prefer_mixed = req.settings.audio_mode == AudioMode::Mixed;
         match (req.capture_system_audio, req.capture_mic) {
-            (true, true) => add_mixed_audio_branch(&pipeline, &monitor_source, &mic_source)?,
-            (true, false) => add_system_audio_branch(&pipeline, &monitor_source)?,
-            (false, true) => add_mic_branch(&pipeline, &mic_source)?,
+            (true, true) if prefer_mixed => add_mixed_audio_branch(
+                &pipeline,
+                &monitor_source,
+                &mic_source,
+                audio_bitrate_bps,
+            )?,
+            (true, true) => {
+                add_system_audio_branch(&pipeline, &monitor_source, audio_bitrate_bps)?;
+                add_mic_branch(&pipeline, &mic_source, audio_bitrate_bps)?;
+            }
+            (true, false) => add_system_audio_branch(&pipeline, &monitor_source, audio_bitrate_bps)?,
+            (false, true) => add_mic_branch(&pipeline, &mic_source, audio_bitrate_bps)?,
             (false, false) => unreachable!(),
         }
     }
@@ -44,7 +57,12 @@ pub fn build_pipeline(req: &RecordRequest) -> Result<gst::Pipeline> {
     Ok(pipeline)
 }
 
-pub fn build_video_pipeline(fd: RawFd, node_id: u32, output_path: &Path) -> Result<gst::Pipeline> {
+pub fn build_video_pipeline(
+    fd: RawFd,
+    node_id: u32,
+    output_path: &Path,
+    settings: &Settings,
+) -> Result<gst::Pipeline> {
     let pipeline = gst::Pipeline::new(Some("screen_record"));
 
     let src = gst::ElementFactory::make("pipewiresrc")
@@ -66,7 +84,7 @@ pub fn build_video_pipeline(fd: RawFd, node_id: u32, output_path: &Path) -> Resu
         .context("videorate missing")?;
 
     let vrate_caps = gst::Caps::builder("video/x-raw")
-        .field("framerate", gst::Fraction::new(10, 1))
+        .field("framerate", gst::Fraction::new(settings.fps as i32, 1))
         .build();
     let vrate_filter = gst::ElementFactory::make("capsfilter")
         .name("vrate_filter")
@@ -84,8 +102,8 @@ pub fn build_video_pipeline(fd: RawFd, node_id: u32, output_path: &Path) -> Resu
 
     let venc = gst::ElementFactory::make("x264enc")
         .name("venc")
-        .property("bitrate", 2500u32)
-        .property("key-int-max", 100u32)
+        .property("bitrate", settings.video_bitrate)
+        .property("key-int-max", settings.fps * 10) // keyframe каждые ~10 с
         .property("bframes", 0u32)
         .property("byte-stream", false)
         .build()
@@ -150,7 +168,11 @@ fn audio_caps() -> gst::Caps {
         .build()
 }
 
-pub fn add_system_audio_branch(pipeline: &gst::Pipeline, monitor_source: &str) -> Result<()> {
+pub fn add_system_audio_branch(
+    pipeline: &gst::Pipeline,
+    monitor_source: &str,
+    bitrate_bps: i32,
+) -> Result<()> {
     if let Err(e) = ensure_source_volume_full(monitor_source) {
         tracing::warn!(%e, "failed to ensure monitor source volume");
     }
@@ -188,7 +210,7 @@ pub fn add_system_audio_branch(pipeline: &gst::Pipeline, monitor_source: &str) -
         .context("queue missing")?;
     let aenc = gst::ElementFactory::make("opusenc")
         .name("sys_aenc")
-        .property("bitrate", 128_000i32)
+        .property("bitrate", bitrate_bps)
         .build()
         .context("opusenc missing (gstreamer1.0-plugins-base?)")?;
 
@@ -200,7 +222,11 @@ pub fn add_system_audio_branch(pipeline: &gst::Pipeline, monitor_source: &str) -
     Ok(())
 }
 
-pub fn add_mic_branch(pipeline: &gst::Pipeline, mic_source: &str) -> Result<()> {
+pub fn add_mic_branch(
+    pipeline: &gst::Pipeline,
+    mic_source: &str,
+    bitrate_bps: i32,
+) -> Result<()> {
     let src = gst::ElementFactory::make("pulsesrc")
         .name("mic_src")
         .property("device", mic_source)
@@ -231,7 +257,7 @@ pub fn add_mic_branch(pipeline: &gst::Pipeline, mic_source: &str) -> Result<()> 
         .build()?;
     let aenc = gst::ElementFactory::make("opusenc")
         .name("mic_aenc")
-        .property("bitrate", 96_000i32)
+        .property("bitrate", bitrate_bps)
         .build()
         .context("opusenc missing (gstreamer1.0-plugins-base?)")?;
 
@@ -247,6 +273,7 @@ pub fn add_mixed_audio_branch(
     pipeline: &gst::Pipeline,
     monitor_source: &str,
     mic_source: &str,
+    bitrate_bps: i32,
 ) -> Result<()> {
     if let Err(e) = ensure_source_volume_full(monitor_source) {
         tracing::warn!(%e, "failed to ensure monitor source volume");
@@ -283,7 +310,7 @@ pub fn add_mixed_audio_branch(
         .build()?;
     let aenc = gst::ElementFactory::make("opusenc")
         .name("mix_aenc")
-        .property("bitrate", 128_000i32)
+        .property("bitrate", bitrate_bps)
         .build()
         .context("opusenc missing (gstreamer1.0-plugins-base?)")?;
 

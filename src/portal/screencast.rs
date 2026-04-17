@@ -7,6 +7,16 @@ use ashpd::desktop::{ResponseError, Session};
 use ashpd::{Error as AshpdError, WindowIdentifier};
 use enumflags2::BitFlags;
 
+use crate::config::CursorMode as SettingsCursorMode;
+
+fn map_cursor_mode(m: SettingsCursorMode) -> CursorMode {
+    match m {
+        SettingsCursorMode::Hidden => CursorMode::Hidden,
+        SettingsCursorMode::Embedded => CursorMode::Embedded,
+        SettingsCursorMode::Metadata => CursorMode::Metadata,
+    }
+}
+
 pub struct ScreenCastSession {
     _proxy: Screencast<'static>,
     session: Session<'static>,
@@ -25,6 +35,7 @@ impl ScreenCastSession {
     pub async fn open(
         parent: WindowIdentifier,
         restore_token: Option<String>,
+        cursor_mode: SettingsCursorMode,
     ) -> ashpd::Result<Self> {
         let proxy = Screencast::new().await?;
         let session = proxy.create_session().await?;
@@ -33,7 +44,7 @@ impl ScreenCastSession {
         let select_req = proxy
             .select_sources(
                 &session,
-                CursorMode::Embedded,
+                map_cursor_mode(cursor_mode),
                 types,
                 false,
                 restore_token.as_deref(),
@@ -74,8 +85,9 @@ impl ScreenCastSession {
 pub async fn open_or_cancel(
     parent: WindowIdentifier,
     restore_token: Option<String>,
+    cursor_mode: SettingsCursorMode,
 ) -> ashpd::Result<OpenOutcome> {
-    match ScreenCastSession::open(parent, restore_token).await {
+    match ScreenCastSession::open(parent, restore_token, cursor_mode).await {
         Ok(session) => Ok(OpenOutcome::Opened(session)),
         Err(AshpdError::Response(ResponseError::Cancelled)) => Ok(OpenOutcome::Cancelled),
         Err(e) => Err(e),

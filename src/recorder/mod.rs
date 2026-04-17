@@ -6,20 +6,26 @@ pub mod pipeline;
 
 use async_channel::{Receiver, Sender};
 
+use crate::config::SharedSettings;
 use crate::portal::screencast::{open_or_cancel, OpenOutcome, ScreenCastSession};
 use crate::portal::state::PortalState;
 use crate::ui::events::{RecorderEvent, UiCommand};
 
-pub use output::default_output_path;
 pub use pipeline::{attach_bus_watch, build_pipeline, start, stop_graceful, RecordRequest};
 
-pub async fn run(cmd_rx: Receiver<UiCommand>, evt_tx: Sender<RecorderEvent>) {
+pub async fn run(
+    cmd_rx: Receiver<UiCommand>,
+    evt_tx: Sender<RecorderEvent>,
+    settings: SharedSettings,
+) {
     let mut current_session: Option<ScreenCastSession> = None;
 
     while let Ok(cmd) = cmd_rx.recv().await {
         match cmd {
             UiCommand::StartRequested { sources, parent } => {
                 tracing::info!(?sources, "start requested");
+
+                let snapshot = { settings.read().unwrap().clone() };
 
                 let saved = PortalState::load();
                 let token = saved.screencast_restore_token.clone();
@@ -29,7 +35,7 @@ pub async fn run(cmd_rx: Receiver<UiCommand>, evt_tx: Sender<RecorderEvent>) {
 
                 let _ = evt_tx.send(RecorderEvent::PortalOpened).await;
 
-                match open_or_cancel(parent, token).await {
+                match open_or_cancel(parent, token, snapshot.cursor_mode).await {
                     Ok(OpenOutcome::Opened(session)) => {
                         let Some(node_id) = session.primary_node_id() else {
                             tracing::warn!("portal returned no streams");
@@ -60,7 +66,10 @@ pub async fn run(cmd_rx: Receiver<UiCommand>, evt_tx: Sender<RecorderEvent>) {
                             }
                         }
 
-                        let output_path = match default_output_path() {
+                        let output_path = match output::build_output_path(
+                            &snapshot.output_dir,
+                            snapshot.container,
+                        ) {
                             Ok(p) => p,
                             Err(e) => {
                                 tracing::error!(%e, "cannot resolve output path");

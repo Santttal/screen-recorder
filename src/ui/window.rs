@@ -12,6 +12,7 @@ use gtk::glib;
 use libadwaita as adw;
 use gtk4 as gtk;
 
+use crate::config::SharedSettings;
 use crate::recorder::{
     attach_bus_watch, build_pipeline, start as pipeline_start, stop_graceful, RecordRequest,
 };
@@ -55,6 +56,7 @@ pub struct AppWindow {
     force_null_watchdog: Rc<RefCell<Option<glib::SourceId>>>,
     cmd_tx: Sender<UiCommand>,
     evt_tx: Sender<RecorderEvent>,
+    settings: SharedSettings,
 }
 
 impl AppWindow {
@@ -62,6 +64,7 @@ impl AppWindow {
         app: &adw::Application,
         cmd_tx: Sender<UiCommand>,
         evt_tx: Sender<RecorderEvent>,
+        settings: SharedSettings,
     ) -> Rc<Self> {
         let window = adw::ApplicationWindow::builder()
             .application(app)
@@ -167,6 +170,7 @@ impl AppWindow {
             force_null_watchdog: Rc::new(RefCell::new(None)),
             cmd_tx,
             evt_tx,
+            settings,
         });
 
         let weak_self = Rc::downgrade(&this);
@@ -351,6 +355,7 @@ impl AppWindow {
         output_path: std::path::PathBuf,
     ) {
         let sources = self.sources_snapshot();
+        let settings_snapshot = self.settings.read().unwrap().clone();
         let req = RecordRequest {
             capture_screen: sources.screen,
             capture_system_audio: sources.system_audio,
@@ -358,6 +363,7 @@ impl AppWindow {
             output_path: output_path.clone(),
             fd,
             node_id,
+            settings: settings_snapshot,
         };
         match build_pipeline(&req) {
             Ok(pipeline) => {
