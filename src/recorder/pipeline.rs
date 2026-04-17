@@ -32,11 +32,11 @@ pub fn build_pipeline(req: &RecordRequest) -> Result<gst::Pipeline> {
             monitor_source,
             mic_source,
         } = detect_audio_devices()?;
-        if req.capture_system_audio {
-            add_system_audio_branch(&pipeline, &monitor_source)?;
-        }
-        if req.capture_mic {
-            add_mic_branch(&pipeline, &mic_source)?;
+        match (req.capture_system_audio, req.capture_mic) {
+            (true, true) => add_mixed_audio_branch(&pipeline, &monitor_source, &mic_source)?,
+            (true, false) => add_system_audio_branch(&pipeline, &monitor_source)?,
+            (false, true) => add_mic_branch(&pipeline, &mic_source)?,
+            (false, false) => unreachable!(),
         }
     }
 
@@ -241,6 +241,130 @@ pub fn add_mic_branch(pipeline: &gst::Pipeline, mic_source: &str) -> Result<()> 
     link_to_mux(pipeline, &aenc)?;
     tracing::info!(device = %mic_source, "mic branch attached");
     Ok(())
+}
+
+pub fn add_mixed_audio_branch(
+    pipeline: &gst::Pipeline,
+    monitor_source: &str,
+    mic_source: &str,
+) -> Result<()> {
+    if let Err(e) = ensure_source_volume_full(monitor_source) {
+        tracing::warn!(%e, "failed to ensure monitor source volume");
+    }
+
+    let (sys_src, sys_tail) = build_audio_preproc("sys", monitor_source)?;
+    let (mic_src, mic_tail) = build_audio_preproc("mic", mic_source)?;
+
+    let mixer = gst::ElementFactory::make("audiomixer")
+        .name("amix")
+        .build()
+        .context("audiomixer missing (gstreamer1.0-plugins-bad?)")?;
+    let mix_capsf = gst::ElementFactory::make("capsfilter")
+        .name("mix_capsf")
+        .property("caps", audio_caps())
+        .build()?;
+    let aqueue = gst::ElementFactory::make("queue")
+        .name("mix_aqueue")
+        .property("max-size-time", 2_000_000_000u64)
+        .property("max-size-buffers", 0u32)
+        .property("max-size-bytes", 0u32)
+        .build()?;
+    let aenc = gst::ElementFactory::make("opusenc")
+        .name("mix_aenc")
+        .property("bitrate", 128_000i32)
+        .build()
+        .context("opusenc missing (gstreamer1.0-plugins-base?)")?;
+
+    pipeline.add_many(&[
+        &sys_src,
+        &sys_tail.convert,
+        &sys_tail.resample,
+        &sys_tail.rate,
+        &sys_tail.capsf,
+        &mic_src,
+        &mic_tail.convert,
+        &mic_tail.resample,
+        &mic_tail.rate,
+        &mic_tail.capsf,
+        &mixer,
+        &mix_capsf,
+        &aqueue,
+        &aenc,
+    ])?;
+
+    gst::Element::link_many(&[
+        &sys_src,
+        &sys_tail.convert,
+        &sys_tail.resample,
+        &sys_tail.rate,
+        &sys_tail.capsf,
+    ])?;
+    gst::Element::link_many(&[
+        &mic_src,
+        &mic_tail.convert,
+        &mic_tail.resample,
+        &mic_tail.rate,
+        &mic_tail.capsf,
+    ])?;
+
+    sys_tail.capsf.link(&mixer)?;
+    mic_tail.capsf.link(&mixer)?;
+
+    gst::Element::link_many(&[&mixer, &mix_capsf, &aqueue, &aenc])?;
+
+    link_to_mux(pipeline, &aenc)?;
+    tracing::info!(
+        %monitor_source,
+        %mic_source,
+        "mixed audio branch attached (sys + mic → single opus track)"
+    );
+    Ok(())
+}
+
+struct AudioPreprocTail {
+    convert: gst::Element,
+    resample: gst::Element,
+    rate: gst::Element,
+    capsf: gst::Element,
+}
+
+fn build_audio_preproc(prefix: &str, device: &str) -> Result<(gst::Element, AudioPreprocTail)> {
+    let src = gst::ElementFactory::make("pulsesrc")
+        .name(&format!("{prefix}_src"))
+        .property("device", device)
+        .property("provide-clock", false)
+        .property("do-timestamp", true)
+        .build()
+        .context("pulsesrc missing")?;
+    src.set_property_from_str("slave-method", "skew");
+
+    let convert = gst::ElementFactory::make("audioconvert")
+        .name(&format!("{prefix}_aconv"))
+        .build()
+        .context("audioconvert missing")?;
+    let resample = gst::ElementFactory::make("audioresample")
+        .name(&format!("{prefix}_ares"))
+        .build()
+        .context("audioresample missing")?;
+    let rate = gst::ElementFactory::make("audiorate")
+        .name(&format!("{prefix}_arate"))
+        .build()
+        .context("audiorate missing")?;
+    let capsf = gst::ElementFactory::make("capsfilter")
+        .name(&format!("{prefix}_capsf"))
+        .property("caps", audio_caps())
+        .build()
+        .context("capsfilter missing")?;
+
+    Ok((
+        src,
+        AudioPreprocTail {
+            convert,
+            resample,
+            rate,
+            capsf,
+        },
+    ))
 }
 
 fn link_to_mux(pipeline: &gst::Pipeline, aenc: &gst::Element) -> Result<()> {
