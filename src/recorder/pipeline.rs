@@ -152,8 +152,11 @@ pub fn add_system_audio_branch(pipeline: &gst::Pipeline, monitor_source: &str) -
     let src = gst::ElementFactory::make("pulsesrc")
         .name("sys_src")
         .property("device", monitor_source)
+        .property("provide-clock", false)
+        .property("do-timestamp", true)
         .build()
         .context("pulsesrc missing")?;
+    src.set_property_from_str("slave-method", "skew");
     let aconv = gst::ElementFactory::make("audioconvert")
         .name("sys_aconv")
         .build()
@@ -196,8 +199,11 @@ pub fn add_mic_branch(pipeline: &gst::Pipeline, mic_source: &str) -> Result<()> 
     let src = gst::ElementFactory::make("pulsesrc")
         .name("mic_src")
         .property("device", mic_source)
+        .property("provide-clock", false)
+        .property("do-timestamp", true)
         .build()
         .context("pulsesrc missing")?;
+    src.set_property_from_str("slave-method", "skew");
     let aconv = gst::ElementFactory::make("audioconvert")
         .name("mic_aconv")
         .build()?;
