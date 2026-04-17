@@ -12,7 +12,9 @@ use gtk::glib;
 use libadwaita as adw;
 use gtk4 as gtk;
 
-use crate::recorder::{attach_bus_watch, build_video_pipeline, start as pipeline_start, stop_graceful};
+use crate::recorder::{
+    attach_bus_watch, build_pipeline, start as pipeline_start, stop_graceful, RecordRequest,
+};
 use crate::ui::events::{RecorderEvent, UiCommand};
 
 #[allow(dead_code)]
@@ -294,7 +296,16 @@ impl AppWindow {
         node_id: u32,
         output_path: std::path::PathBuf,
     ) {
-        match build_video_pipeline(fd, node_id, &output_path) {
+        let sources = self.sources_snapshot();
+        let req = RecordRequest {
+            capture_screen: sources.screen,
+            capture_system_audio: sources.system_audio,
+            capture_mic: sources.microphone,
+            output_path: output_path.clone(),
+            fd,
+            node_id,
+        };
+        match build_pipeline(&req) {
             Ok(pipeline) => {
                 match attach_bus_watch(&pipeline, self.bus_event_sender(), output_path.clone()) {
                     Ok(guard) => {
@@ -314,7 +325,7 @@ impl AppWindow {
                 *self.pipeline.borrow_mut() = Some(pipeline);
             }
             Err(e) => {
-                tracing::error!(%e, "build_video_pipeline failed");
+                tracing::error!(%e, "build_pipeline failed");
                 self.set_status(&format!("Ошибка: {e}"));
             }
         }

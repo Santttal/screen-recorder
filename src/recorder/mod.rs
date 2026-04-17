@@ -1,5 +1,6 @@
 //! Recorder-модуль: GStreamer pipeline, state machine, захват аудио/видео.
 
+pub mod audio;
 pub mod output;
 pub mod pipeline;
 
@@ -10,7 +11,7 @@ use crate::portal::state::PortalState;
 use crate::ui::events::{RecorderEvent, UiCommand};
 
 pub use output::default_output_path;
-pub use pipeline::{attach_bus_watch, build_video_pipeline, start, stop_graceful};
+pub use pipeline::{attach_bus_watch, build_pipeline, start, stop_graceful, RecordRequest};
 
 pub async fn run(cmd_rx: Receiver<UiCommand>, evt_tx: Sender<RecorderEvent>) {
     let mut current_session: Option<ScreenCastSession> = None;

@@ -1,14 +1,48 @@
 use std::os::fd::RawFd;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use async_channel::Sender;
 use gstreamer as gst;
 use gstreamer::prelude::*;
 use gtk::glib;
 use gtk4 as gtk;
 
+use crate::recorder::audio::{detect_audio_devices, AudioDevices};
 use crate::ui::events::RecorderEvent;
+
+#[derive(Debug, Clone)]
+pub struct RecordRequest {
+    pub capture_screen: bool,
+    pub capture_system_audio: bool,
+    pub capture_mic: bool,
+    pub output_path: PathBuf,
+    pub fd: RawFd,
+    pub node_id: u32,
+}
+
+pub fn build_pipeline(req: &RecordRequest) -> Result<gst::Pipeline> {
+    if !req.capture_screen {
+        return Err(anyhow!("capture_screen=false не поддерживается на MVP"));
+    }
+    let pipeline = build_video_pipeline(req.fd, req.node_id, &req.output_path)?;
+
+    if req.capture_system_audio || req.capture_mic {
+        let AudioDevices {
+            monitor_source,
+            mic_source,
+        } = detect_audio_devices()?;
+        if req.capture_system_audio {
+            add_system_audio_branch(&pipeline, &monitor_source)?;
+        }
+        if req.capture_mic {
+            add_mic_branch(&pipeline, &mic_source)?;
+        }
+    }
+
+    dump_dot(&pipeline, "pipeline-ready");
+    Ok(pipeline)
+}
 
 pub fn build_video_pipeline(fd: RawFd, node_id: u32, output_path: &Path) -> Result<gst::Pipeline> {
     let pipeline = gst::Pipeline::new(Some("screen_record"));
@@ -101,9 +135,100 @@ pub fn build_video_pipeline(fd: RawFd, node_id: u32, output_path: &Path) -> Resu
         "video pipeline built"
     );
 
-    dump_dot(&pipeline, "pipeline-ready");
-
     Ok(pipeline)
+}
+
+fn audio_caps() -> gst::Caps {
+    gst::Caps::builder("audio/x-raw")
+        .field("format", "S16LE")
+        .field("channels", 2i32)
+        .field("rate", 48000i32)
+        .build()
+}
+
+pub fn add_system_audio_branch(pipeline: &gst::Pipeline, monitor_source: &str) -> Result<()> {
+    let src = gst::ElementFactory::make("pulsesrc")
+        .name("sys_src")
+        .property("device", monitor_source)
+        .build()
+        .context("pulsesrc missing")?;
+    let aconv = gst::ElementFactory::make("audioconvert")
+        .name("sys_aconv")
+        .build()
+        .context("audioconvert missing")?;
+    let ares = gst::ElementFactory::make("audioresample")
+        .name("sys_ares")
+        .build()
+        .context("audioresample missing")?;
+    let capsf = gst::ElementFactory::make("capsfilter")
+        .name("sys_capsf")
+        .property("caps", audio_caps())
+        .build()
+        .context("capsfilter missing")?;
+    let aqueue = gst::ElementFactory::make("queue")
+        .name("sys_aqueue")
+        .build()
+        .context("queue missing")?;
+    let aenc = gst::ElementFactory::make("opusenc")
+        .name("sys_aenc")
+        .property("bitrate", 128_000i32)
+        .build()
+        .context("opusenc missing (gstreamer1.0-plugins-base?)")?;
+
+    pipeline.add_many(&[&src, &aconv, &ares, &capsf, &aqueue, &aenc])?;
+    gst::Element::link_many(&[&src, &aconv, &ares, &capsf, &aqueue, &aenc])?;
+
+    link_to_mux(pipeline, &aenc)?;
+    tracing::info!(device = %monitor_source, "system audio branch attached");
+    Ok(())
+}
+
+pub fn add_mic_branch(pipeline: &gst::Pipeline, mic_source: &str) -> Result<()> {
+    let src = gst::ElementFactory::make("pulsesrc")
+        .name("mic_src")
+        .property("device", mic_source)
+        .build()
+        .context("pulsesrc missing")?;
+    let aconv = gst::ElementFactory::make("audioconvert")
+        .name("mic_aconv")
+        .build()?;
+    let ares = gst::ElementFactory::make("audioresample")
+        .name("mic_ares")
+        .build()?;
+    let capsf = gst::ElementFactory::make("capsfilter")
+        .name("mic_capsf")
+        .property("caps", audio_caps())
+        .build()?;
+    let aqueue = gst::ElementFactory::make("queue")
+        .name("mic_aqueue")
+        .build()?;
+    let aenc = gst::ElementFactory::make("opusenc")
+        .name("mic_aenc")
+        .property("bitrate", 96_000i32)
+        .build()
+        .context("opusenc missing (gstreamer1.0-plugins-base?)")?;
+
+    pipeline.add_many(&[&src, &aconv, &ares, &capsf, &aqueue, &aenc])?;
+    gst::Element::link_many(&[&src, &aconv, &ares, &capsf, &aqueue, &aenc])?;
+
+    link_to_mux(pipeline, &aenc)?;
+    tracing::info!(device = %mic_source, "mic branch attached");
+    Ok(())
+}
+
+fn link_to_mux(pipeline: &gst::Pipeline, aenc: &gst::Element) -> Result<()> {
+    let mux = pipeline
+        .by_name("mux")
+        .ok_or_else(|| anyhow!("mux element not found in pipeline"))?;
+    let mux_pad = mux
+        .request_pad_simple("audio_%u")
+        .ok_or_else(|| anyhow!("matroskamux did not grant audio sink pad"))?;
+    let src_pad = aenc
+        .static_pad("src")
+        .ok_or_else(|| anyhow!("opusenc has no src pad"))?;
+    src_pad.link(&mux_pad)?;
+    tracing::debug!(pad = %mux_pad.name(), "linked audio branch to mux");
+    Ok(())
 }
 
 pub fn start(pipeline: &gst::Pipeline) -> Result<()> {
