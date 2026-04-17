@@ -3,6 +3,7 @@ use std::rc::Rc;
 use std::time::Instant;
 
 use adw::prelude::*;
+use ashpd::WindowIdentifier;
 use async_channel::Sender;
 use gtk::gio;
 use gtk::glib;
@@ -140,9 +141,12 @@ impl AppWindow {
 
         let weak_self = Rc::downgrade(&this);
         btn_start_stop.connect_clicked(move |_| {
-            if let Some(me) = weak_self.upgrade() {
-                me.on_start_stop_clicked();
-            }
+            let weak = weak_self.clone();
+            glib::MainContext::default().spawn_local(async move {
+                if let Some(me) = weak.upgrade() {
+                    me.on_start_stop_clicked().await;
+                }
+            });
         });
 
         this
@@ -251,13 +255,23 @@ impl AppWindow {
         });
     }
 
-    fn on_start_stop_clicked(&self) {
+    pub async fn window_identifier(&self) -> WindowIdentifier {
+        WindowIdentifier::from_native(&self.window).await
+    }
+
+    async fn on_start_stop_clicked(&self) {
         let cmd = match self.state() {
-            UiRecordingState::Idle => UiCommand::StartRequested(self.sources_snapshot()),
+            UiRecordingState::Idle => {
+                let parent = self.window_identifier().await;
+                UiCommand::StartRequested {
+                    sources: self.sources_snapshot(),
+                    parent,
+                }
+            }
             UiRecordingState::Recording => UiCommand::StopRequested,
         };
         tracing::info!(?cmd, "start/stop clicked");
-        if let Err(err) = self.cmd_tx.send_blocking(cmd) {
+        if let Err(err) = self.cmd_tx.send(cmd).await {
             tracing::error!(%err, "failed to send UiCommand");
         }
     }

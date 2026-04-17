@@ -1816,6 +1816,7 @@ dependencies = [
  "ashpd",
  "async-channel",
  "directories",
+ "enumflags2",
  "gstreamer",
  "gstreamer-pbutils",
  "gtk4",

@@ -1,11 +1,16 @@
 use std::path::PathBuf;
 
+use ashpd::WindowIdentifier;
+
 use crate::ui::window::Sources;
 
 #[allow(dead_code)]
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum UiCommand {
-    StartRequested(Sources),
+    StartRequested {
+        sources: Sources,
+        parent: WindowIdentifier,
+    },
     StopRequested,
     Quit,
 }

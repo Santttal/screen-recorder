@@ -1,13 +1,98 @@
 //! Recorder-модуль: GStreamer pipeline, state machine, захват аудио/видео.
 
+use std::path::PathBuf;
+
 use async_channel::{Receiver, Sender};
 
+use crate::portal::screencast::{open_or_cancel, OpenOutcome, ScreenCastSession};
+use crate::portal::state::PortalState;
 use crate::ui::events::{RecorderEvent, UiCommand};
 
-pub async fn run(cmd_rx: Receiver<UiCommand>, _evt_tx: Sender<RecorderEvent>) {
+pub async fn run(cmd_rx: Receiver<UiCommand>, evt_tx: Sender<RecorderEvent>) {
+    let mut current_session: Option<ScreenCastSession> = None;
+
     while let Ok(cmd) = cmd_rx.recv().await {
-        tracing::info!(?cmd, "recorder received command");
-        // TODO: фазы 3+ — portal, pipeline, lifecycle.
+        match cmd {
+            UiCommand::StartRequested { sources, parent } => {
+                tracing::info!(?sources, "start requested");
+
+                let saved = PortalState::load();
+                let token = saved.screencast_restore_token.clone();
+                if token.is_some() {
+                    tracing::debug!("restore_token loaded from state.json");
+                }
+
+                let _ = evt_tx.send(RecorderEvent::PortalOpened).await;
+
+                match open_or_cancel(parent, token).await {
+                    Ok(OpenOutcome::Opened(session)) => {
+                        if let Some(node_id) = session.primary_node_id() {
+                            tracing::info!(
+                                node_id,
+                                size = ?session.primary_size(),
+                                fd = session.pipewire_fd,
+                                "screencast ready"
+                            );
+                        } else {
+                            tracing::warn!("portal returned no streams");
+                            let _ = evt_tx
+                                .send(RecorderEvent::Error("no streams from portal".into()))
+                                .await;
+                            continue;
+                        }
+
+                        if let Some(new_token) = &session.restore_token {
+                            if saved.screencast_restore_token.as_deref() != Some(new_token.as_str()) {
+                                let new_state = PortalState {
+                                    screencast_restore_token: Some(new_token.clone()),
+                                };
+                                if let Err(e) = new_state.save() {
+                                    tracing::warn!(%e, "failed to save state.json");
+                                } else {
+                                    tracing::debug!("restore_token saved to state.json");
+                                }
+                            }
+                        }
+
+                        current_session = Some(session);
+                        let _ = evt_tx.send(RecorderEvent::RecordingStarted).await;
+                    }
+                    Ok(OpenOutcome::Cancelled) => {
+                        tracing::debug!("user cancelled screencast dialog");
+                        let _ = evt_tx.send(RecorderEvent::Cancelled).await;
+                    }
+                    Err(e) => {
+                        tracing::error!(%e, "portal error");
+                        // Если токен оказался невалидным — вычистить его.
+                        let mut fresh = saved.clone();
+                        if fresh.screencast_restore_token.is_some() {
+                            fresh.screencast_restore_token = None;
+                            let _ = fresh.save();
+                        }
+                        let _ = evt_tx.send(RecorderEvent::Error(e.to_string())).await;
+                    }
+                }
+            }
+            UiCommand::StopRequested => {
+                if let Some(session) = current_session.take() {
+                    if let Err(e) = session.close().await {
+                        tracing::warn!(%e, "failed to close portal session");
+                    }
+                    // TODO фаза 4+: остановить pipeline, получить реальный путь файла.
+                    let out = PathBuf::from("(pipeline pending in phase 4)");
+                    let _ = evt_tx
+                        .send(RecorderEvent::RecordingStopped { output_path: out })
+                        .await;
+                } else {
+                    tracing::warn!("StopRequested without active session");
+                }
+            }
+            UiCommand::Quit => break,
+        }
+    }
+
+    if let Some(session) = current_session.take() {
+        let _ = session.close().await;
     }
     tracing::info!("recorder loop exited");
 }
