@@ -46,11 +46,16 @@ fn main() -> glib::ExitCode {
     let evt_rx_cell: Rc<RefCell<Option<Receiver<RecorderEvent>>>> =
         Rc::new(RefCell::new(Some(evt_rx)));
     let cmd_tx_for_window = cmd_tx.clone();
+    let evt_tx_for_window = evt_tx.clone();
 
     app.connect_activate(move |app| {
         register_app_actions(app, &cmd_tx);
 
-        let window = AppWindow::new(app, cmd_tx_for_window.clone());
+        let window = AppWindow::new(
+            app,
+            cmd_tx_for_window.clone(),
+            evt_tx_for_window.clone(),
+        );
         wire_window_actions(app, &window);
 
         if let Some(rx) = evt_rx_cell.borrow_mut().take() {

@@ -5,11 +5,14 @@ use std::time::Instant;
 use adw::prelude::*;
 use ashpd::WindowIdentifier;
 use async_channel::Sender;
+use gstreamer as gst;
+use gstreamer::prelude::*;
 use gtk::gio;
 use gtk::glib;
 use libadwaita as adw;
 use gtk4 as gtk;
 
+use crate::recorder::{attach_bus_watch, build_video_pipeline, start as pipeline_start, stop_graceful};
 use crate::ui::events::{RecorderEvent, UiCommand};
 
 #[allow(dead_code)]
@@ -36,11 +39,18 @@ pub struct AppWindow {
     switch_mic: gtk::Switch,
     state: Rc<RefCell<UiRecordingState>>,
     timer_source: Rc<RefCell<Option<glib::SourceId>>>,
+    pipeline: Rc<RefCell<Option<gst::Pipeline>>>,
+    bus_guard: Rc<RefCell<Option<glib::SourceId>>>,
     cmd_tx: Sender<UiCommand>,
+    evt_tx: Sender<RecorderEvent>,
 }
 
 impl AppWindow {
-    pub fn new(app: &adw::Application, cmd_tx: Sender<UiCommand>) -> Rc<Self> {
+    pub fn new(
+        app: &adw::Application,
+        cmd_tx: Sender<UiCommand>,
+        evt_tx: Sender<RecorderEvent>,
+    ) -> Rc<Self> {
         let window = adw::ApplicationWindow::builder()
             .application(app)
             .title("Screen Record")
@@ -136,7 +146,10 @@ impl AppWindow {
             switch_mic,
             state: Rc::new(RefCell::new(UiRecordingState::Idle)),
             timer_source: Rc::new(RefCell::new(None)),
+            pipeline: Rc::new(RefCell::new(None)),
+            bus_guard: Rc::new(RefCell::new(None)),
             cmd_tx,
+            evt_tx,
         });
 
         let weak_self = Rc::downgrade(&this);
@@ -230,20 +243,40 @@ impl AppWindow {
                     RecorderEvent::PortalOpened => {
                         window.set_status("Настройка источника…");
                     }
+                    RecorderEvent::ScreenCastReady {
+                        fd,
+                        node_id,
+                        output_path,
+                    } => {
+                        window.on_screencast_ready(fd, node_id, output_path);
+                    }
                     RecorderEvent::RecordingStarted => {
                         window.set_recording_state(UiRecordingState::Recording);
                         window.set_status("Запись…");
                         window.start_timer();
                     }
                     RecorderEvent::RecordingStopped { output_path } => {
+                        if let Some(src) = window.bus_guard.borrow_mut().take() {
+                            src.remove();
+                        }
+                        window.pipeline.borrow_mut().take();
                         window.set_recording_state(UiRecordingState::Idle);
                         window.stop_timer();
                         window.set_status(&format!("Сохранено: {}", output_path.display()));
+                        // Закрыть portal-сессию (recorder tokio-задача).
+                        let _ = window.cmd_tx.send(UiCommand::StopRequested).await;
                     }
                     RecorderEvent::Error(msg) => {
+                        if let Some(src) = window.bus_guard.borrow_mut().take() {
+                            src.remove();
+                        }
+                        if let Some(p) = window.pipeline.borrow_mut().take() {
+                            let _ = p.set_state(gst::State::Null);
+                        }
                         window.set_recording_state(UiRecordingState::Idle);
                         window.stop_timer();
                         window.set_status(&format!("Ошибка: {}", msg));
+                        let _ = window.cmd_tx.send(UiCommand::StopRequested).await;
                     }
                     RecorderEvent::Cancelled => {
                         window.set_recording_state(UiRecordingState::Idle);
@@ -255,24 +288,70 @@ impl AppWindow {
         });
     }
 
+    fn on_screencast_ready(
+        &self,
+        fd: std::os::fd::RawFd,
+        node_id: u32,
+        output_path: std::path::PathBuf,
+    ) {
+        match build_video_pipeline(fd, node_id, &output_path) {
+            Ok(pipeline) => {
+                match attach_bus_watch(&pipeline, self.bus_event_sender(), output_path.clone()) {
+                    Ok(guard) => {
+                        *self.bus_guard.borrow_mut() = Some(guard);
+                    }
+                    Err(e) => {
+                        tracing::error!(%e, "attach_bus_watch failed");
+                        self.set_status(&format!("Ошибка: {e}"));
+                        return;
+                    }
+                }
+                if let Err(e) = pipeline_start(&pipeline) {
+                    tracing::error!(%e, "pipeline start failed");
+                    self.set_status(&format!("Ошибка: {e}"));
+                    return;
+                }
+                *self.pipeline.borrow_mut() = Some(pipeline);
+            }
+            Err(e) => {
+                tracing::error!(%e, "build_video_pipeline failed");
+                self.set_status(&format!("Ошибка: {e}"));
+            }
+        }
+    }
+
+    fn bus_event_sender(&self) -> async_channel::Sender<RecorderEvent> {
+        self.evt_tx.clone()
+    }
+
     pub async fn window_identifier(&self) -> WindowIdentifier {
         WindowIdentifier::from_native(&self.window).await
     }
 
     async fn on_start_stop_clicked(&self) {
-        let cmd = match self.state() {
+        match self.state() {
             UiRecordingState::Idle => {
                 let parent = self.window_identifier().await;
-                UiCommand::StartRequested {
+                let cmd = UiCommand::StartRequested {
                     sources: self.sources_snapshot(),
                     parent,
+                };
+                tracing::info!("start clicked");
+                if let Err(err) = self.cmd_tx.send(cmd).await {
+                    tracing::error!(%err, "failed to send StartRequested");
                 }
             }
-            UiRecordingState::Recording => UiCommand::StopRequested,
-        };
-        tracing::info!(?cmd, "start/stop clicked");
-        if let Err(err) = self.cmd_tx.send(cmd).await {
-            tracing::error!(%err, "failed to send UiCommand");
+            UiRecordingState::Recording => {
+                tracing::info!("stop clicked");
+                self.set_status("Сохранение…");
+                let pipeline_snapshot = self.pipeline.borrow().clone();
+                if let Some(p) = pipeline_snapshot {
+                    stop_graceful(&p);
+                } else {
+                    tracing::warn!("stop clicked but no pipeline");
+                    let _ = self.cmd_tx.send(UiCommand::StopRequested).await;
+                }
+            }
         }
     }
 }

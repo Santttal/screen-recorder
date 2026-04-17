@@ -1,3 +1,4 @@
+use std::os::fd::RawFd;
 use std::path::PathBuf;
 
 use ashpd::WindowIdentifier;
@@ -19,8 +20,15 @@ pub enum UiCommand {
 #[derive(Debug, Clone)]
 pub enum RecorderEvent {
     PortalOpened,
+    ScreenCastReady {
+        fd: RawFd,
+        node_id: u32,
+        output_path: PathBuf,
+    },
     RecordingStarted,
-    RecordingStopped { output_path: PathBuf },
+    RecordingStopped {
+        output_path: PathBuf,
+    },
     Error(String),
     Cancelled,
 }
