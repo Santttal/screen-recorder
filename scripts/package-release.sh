@@ -17,11 +17,11 @@ cargo build --release
 
 echo "→ stage in $STAGE"
 rm -rf "$STAGE"
-mkdir -p "$STAGE/scripts" "$STAGE/data/icons"
+mkdir -p "$STAGE/scripts" "$STAGE/data"
 
 cp target/release/screen_record "$STAGE/"
 cp data/dev.local.ScreenRecord.desktop "$STAGE/data/"
-cp data/icons/dev.local.ScreenRecord.svg "$STAGE/data/icons/"
+cp -r data/icons "$STAGE/data/"
 cp data/style.css "$STAGE/data/"
 cp scripts/install.sh "$STAGE/scripts/"
 cp README.md LICENSE "$STAGE/"

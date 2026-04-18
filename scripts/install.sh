@@ -20,9 +20,9 @@ fi
 
 BIN_DST="$HOME/.local/bin/screen_record"
 DESKTOP_DST="$HOME/.local/share/applications/dev.local.ScreenRecord.desktop"
-ICON_DST="$HOME/.local/share/icons/hicolor/scalable/apps/dev.local.ScreenRecord.svg"
+ICON_ROOT="$HOME/.local/share/icons/hicolor"
 
-mkdir -p "$(dirname "$BIN_DST")" "$(dirname "$DESKTOP_DST")" "$(dirname "$ICON_DST")"
+mkdir -p "$(dirname "$BIN_DST")" "$(dirname "$DESKTOP_DST")" "$ICON_ROOT"
 
 echo "→ install binary:  $BIN_DST"
 install -m 755 "$BIN_SRC" "$BIN_DST"
@@ -31,8 +31,17 @@ echo "→ install desktop: $DESKTOP_DST"
 sed "s|^Exec=.*|Exec=$BIN_DST|" "$ROOT/data/dev.local.ScreenRecord.desktop" > "$DESKTOP_DST"
 chmod 644 "$DESKTOP_DST"
 
-echo "→ install icon:    $ICON_DST"
-install -m 644 "$ROOT/data/icons/dev.local.ScreenRecord.svg" "$ICON_DST"
+echo "→ install icons (hicolor theme)"
+for size_dir in "$ROOT/data/icons/hicolor"/*; do
+    [[ -d "$size_dir" ]] || continue
+    sz=$(basename "$size_dir")
+    src_icon="$size_dir/apps/dev.local.ScreenRecord.png"
+    if [[ -f "$src_icon" ]]; then
+        dst_dir="$ICON_ROOT/$sz/apps"
+        mkdir -p "$dst_dir"
+        install -m 644 "$src_icon" "$dst_dir/dev.local.ScreenRecord.png"
+    fi
+done
 
 command -v update-desktop-database >/dev/null && update-desktop-database "$HOME/.local/share/applications" || true
 command -v gtk-update-icon-cache   >/dev/null && gtk-update-icon-cache -q "$HOME/.local/share/icons/hicolor" || true

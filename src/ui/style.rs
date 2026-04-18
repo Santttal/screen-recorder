@@ -12,7 +12,25 @@ pub fn load_css() {
             &provider,
             gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
         );
+        // Регистрируем собственный поиск иконок в dev-режиме, чтобы при `cargo run`
+        // находилась иконка из `data/icons`. В production (после install.sh) иконки
+        // уже в `~/.local/share/icons/hicolor` — дефолтный путь theme.
+        let theme = gtk::IconTheme::for_display(&display);
+        for path in dev_icon_search_paths() {
+            theme.add_search_path(&path);
+        }
     } else {
         tracing::warn!("no default GDK display, CSS not applied");
     }
+}
+
+fn dev_icon_search_paths() -> Vec<std::path::PathBuf> {
+    let mut paths = Vec::new();
+    if let Ok(cwd) = std::env::current_dir() {
+        paths.push(cwd.join("data/icons"));
+    }
+    if let Ok(manifest) = std::env::var("CARGO_MANIFEST_DIR") {
+        paths.push(std::path::PathBuf::from(manifest).join("data/icons"));
+    }
+    paths
 }
