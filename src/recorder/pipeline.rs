@@ -11,7 +11,7 @@ use gtk4 as gtk;
 use crate::config::{AudioMode, EncoderHint, Settings};
 use crate::recorder::audio::{detect_audio_devices, ensure_source_volume_full, AudioDevices};
 use crate::recorder::encoders::{
-    preencoder_converter_factory, Codec, HwHint, VideoEncoder,
+    preencoder_converter_factory, requires_nv12_caps, Codec, HwHint, VideoEncoder,
 };
 use crate::ui::events::RecorderEvent;
 
@@ -141,7 +141,7 @@ pub fn build_video_pipeline(
         .build()
         .context("filesink missing")?;
 
-    // Для HW-бекендов вставляем отдельный uploader/convert перед энкодером.
+    // Для HW-бекендов вставляем videoconvert + capsfilter(NV12) перед энкодером.
     let hw_pre: Option<gst::Element> = if backend.is_hw() {
         let factory = preencoder_converter_factory(backend);
         gst::ElementFactory::make(factory)
@@ -156,8 +156,24 @@ pub fn build_video_pipeline(
         None
     };
 
+    let hw_caps: Option<gst::Element> = if requires_nv12_caps(backend) {
+        let caps = gst::Caps::builder("video/x-raw")
+            .field("format", "NV12")
+            .build();
+        gst::ElementFactory::make("capsfilter")
+            .name("hw_caps")
+            .property("caps", &caps)
+            .build()
+            .ok()
+    } else {
+        None
+    };
+
     let mut elements: Vec<&gst::Element> = vec![&src, &vconv, &vrate, &vrate_filter, &vqueue];
     if let Some(ref e) = hw_pre {
+        elements.push(e);
+    }
+    if let Some(ref e) = hw_caps {
         elements.push(e);
     }
     elements.extend([&venc, &vparse, &mux, &fsink]);

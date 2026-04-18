@@ -147,12 +147,13 @@ fn apply_properties(element: &gst::Element, info: &EncoderInfo, bitrate_kbps: u3
             // bitrate в vaapih264enc в kbps
             element.set_property("bitrate", bitrate_kbps);
             element.set_property("keyframe-period", 100u32);
-            element.set_property_from_str("rate-control", "cbr");
+            // Не все Intel iGPU поддерживают CBR — используем VBR (шире совместимость)
+            element.set_property_from_str("rate-control", "vbr");
         }
         "vah264enc" => {
             // va-plugin принимает bitrate в kbps
             element.set_property("bitrate", bitrate_kbps);
-            element.set_property_from_str("rate-control", "cbr");
+            element.set_property_from_str("rate-control", "vbr");
         }
         "nvh264enc" => {
             element.set_property("bitrate", bitrate_kbps);
@@ -168,12 +169,19 @@ fn apply_properties(element: &gst::Element, info: &EncoderInfo, bitrate_kbps: u3
 }
 
 /// Какой элемент преобразования цвета нужен перед HW-энкодером.
+/// Для VAAPI на многих Intel iGPU VPP недоступен — используем SW videoconvert + явный NV12 caps.
 pub fn preencoder_converter_factory(backend: Backend) -> &'static str {
     match backend {
-        Backend::Vaapi => "vaapipostproc",
-        Backend::VaNew => "vapostproc",
+        // VPP (vaapipostproc/vapostproc) часто не работает на встроенных GPU →
+        // полагаемся на SW videoconvert для преобразования в NV12.
+        Backend::Vaapi | Backend::VaNew => "videoconvert",
         Backend::Nvenc => "nvvidconv",
-        Backend::Qsv => "videoconvert", // qsv часто сам умеет
+        Backend::Qsv => "videoconvert",
         Backend::Software => "videoconvert",
     }
+}
+
+/// Нужен ли явный capsfilter format=NV12 перед HW-энкодером.
+pub fn requires_nv12_caps(backend: Backend) -> bool {
+    matches!(backend, Backend::Vaapi | Backend::VaNew | Backend::Qsv)
 }

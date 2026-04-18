@@ -358,7 +358,7 @@ fn build_hotkeys_page(
 
     let hotkey_row = adw::ActionRow::builder()
         .title("Start / Stop")
-        .subtitle("Формат GTK-акселератора, например <Ctrl><Alt>R")
+        .subtitle("Формат GTK-акселератора, например &lt;Ctrl&gt;&lt;Alt&gt;R")
         .build();
     let entry = gtk::Entry::builder()
         .valign(gtk::Align::Center)
