@@ -48,6 +48,7 @@ pub struct AppWindow {
     switch_screen: gtk::Switch,
     switch_sys: gtk::Switch,
     switch_mic: gtk::Switch,
+    lbl_rec_dot: gtk::Label,
     toast_overlay: adw::ToastOverlay,
     state: Rc<RefCell<UiRecordingState>>,
     timer_source: Rc<RefCell<Option<glib::SourceId>>>,
@@ -74,6 +75,12 @@ impl AppWindow {
             .build();
 
         let header = adw::HeaderBar::new();
+
+        let lbl_rec_dot = gtk::Label::new(Some("●"));
+        lbl_rec_dot.add_css_class("recording-dot");
+        lbl_rec_dot.set_visible(false);
+        lbl_rec_dot.set_tooltip_text(Some("Идёт запись"));
+        header.pack_start(&lbl_rec_dot);
 
         let menu = gio::Menu::new();
         menu.append(Some("Настройки"), Some("app.preferences"));
@@ -134,7 +141,7 @@ impl AppWindow {
         btn_start_stop.add_css_class("pill");
         root.append(&btn_start_stop);
 
-        let lbl_timer = gtk::Label::new(Some("00:00"));
+        let lbl_timer = gtk::Label::new(Some("00:00:00"));
         lbl_timer.add_css_class("title-2");
         lbl_timer.add_css_class("timer-label");
         lbl_timer.set_visible(false);
@@ -162,6 +169,7 @@ impl AppWindow {
             switch_screen,
             switch_sys,
             switch_mic,
+            lbl_rec_dot,
             toast_overlay,
             state: Rc::new(RefCell::new(UiRecordingState::Idle)),
             timer_source: Rc::new(RefCell::new(None)),
@@ -219,6 +227,8 @@ impl AppWindow {
 
     pub fn set_recording_state(&self, state: UiRecordingState) {
         *self.state.borrow_mut() = state;
+        self.lbl_rec_dot
+            .set_visible(matches!(state, UiRecordingState::Recording));
         match state {
             UiRecordingState::Idle => {
                 self.btn_start_stop.set_label("Начать запись");
@@ -257,6 +267,23 @@ impl AppWindow {
         self.lbl_status.set_label(text);
     }
 
+    pub fn show_saved_toast(&self, path: &std::path::Path) {
+        let name = path
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let toast = adw::Toast::builder()
+            .title(&format!("Сохранено: {name}"))
+            .button_label("Показать")
+            .action_name("app.show-file")
+            .timeout(8)
+            .build();
+        if let Some(d) = path.parent() {
+            toast.set_action_target_value(Some(&d.to_string_lossy().to_string().to_variant()));
+        }
+        self.toast_overlay.add_toast(toast);
+    }
+
     pub fn show_toast(&self, text: &str) {
         let trimmed = if text.chars().count() > 120 {
             let cut: String = text.chars().take(117).collect();
@@ -273,10 +300,13 @@ impl AppWindow {
         let started = Instant::now();
         let lbl = self.lbl_timer.clone();
         self.lbl_timer.set_visible(true);
-        self.lbl_timer.set_label("00:00");
+        self.lbl_timer.set_label("00:00:00");
         let src = glib::timeout_add_seconds_local(1, move || {
             let secs = started.elapsed().as_secs();
-            lbl.set_label(&format!("{:02}:{:02}", secs / 60, secs % 60));
+            let h = secs / 3600;
+            let m = (secs % 3600) / 60;
+            let s = secs % 60;
+            lbl.set_label(&format!("{h:02}:{m:02}:{s:02}"));
             glib::Continue(true)
         });
         *self.timer_source.borrow_mut() = Some(src);
@@ -287,7 +317,7 @@ impl AppWindow {
             src.remove();
         }
         self.lbl_timer.set_visible(false);
-        self.lbl_timer.set_label("00:00");
+        self.lbl_timer.set_label("00:00:00");
     }
 
     pub fn spawn_event_loop(self: &Rc<Self>, evt_rx: async_channel::Receiver<RecorderEvent>) {
@@ -321,6 +351,7 @@ impl AppWindow {
                         window.set_recording_state(UiRecordingState::Idle);
                         window.stop_timer();
                         window.set_status(&format!("Сохранено: {}", output_path.display()));
+                        window.show_saved_toast(&output_path);
                         // Закрыть portal-сессию (recorder tokio-задача).
                         let _ = window.cmd_tx.send(UiCommand::StopRequested).await;
                     }

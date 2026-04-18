@@ -114,4 +114,16 @@ fn wire_window_actions(app: &Application, window: &Rc<AppWindow>, settings: Shar
         PreferencesWindow::present(&parent_window, settings.clone());
     });
     app.add_action(&act_prefs);
+
+    let act_show_file = gio::SimpleAction::new("show-file", Some(glib::VariantTy::STRING));
+    act_show_file.connect_activate(move |_, param| {
+        let Some(path_str) = param.and_then(|v| v.str().map(|s| s.to_owned())) else {
+            return;
+        };
+        let uri = format!("file://{path_str}");
+        if let Err(e) = gio::AppInfo::launch_default_for_uri(&uri, gio::AppLaunchContext::NONE) {
+            tracing::warn!(%e, "failed to open folder");
+        }
+    });
+    app.add_action(&act_show_file);
 }

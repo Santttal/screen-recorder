@@ -1,5 +1,13 @@
 .recording-dot {
     color: #e01b24;
+    font-size: 16pt;
+    animation: rec-pulse 1.5s infinite ease-in-out;
+}
+
+@keyframes rec-pulse {
+    0%   { opacity: 1.0; }
+    50%  { opacity: 0.2; }
+    100% { opacity: 1.0; }
 }
 
 .timer-label {
