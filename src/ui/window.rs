@@ -350,8 +350,19 @@ impl AppWindow {
                         window.pipeline.borrow_mut().take();
                         window.set_recording_state(UiRecordingState::Idle);
                         window.stop_timer();
-                        window.set_status(&format!("Сохранено: {}", output_path.display()));
-                        window.show_saved_toast(&output_path);
+                        // Remux в целевой контейнер если пользователь выбрал не MKV.
+                        let container = window.settings.read().unwrap().container;
+                        let final_path =
+                            match crate::recorder::output::remux_to(&output_path, container) {
+                                Ok(p) => p,
+                                Err(e) => {
+                                    tracing::warn!(%e, "remux failed, keeping mkv");
+                                    window.show_toast(&format!("Remux не удался, оставлен MKV: {e}"));
+                                    output_path.clone()
+                                }
+                            };
+                        window.set_status(&format!("Сохранено: {}", final_path.display()));
+                        window.show_saved_toast(&final_path);
                         // Закрыть portal-сессию (recorder tokio-задача).
                         let _ = window.cmd_tx.send(UiCommand::StopRequested).await;
                     }

@@ -67,7 +67,7 @@ pub async fn run(
                             }
                         }
 
-                        let output_path = match output::build_output_path(
+                        let final_path = match output::build_output_path(
                             &snapshot.output_dir,
                             snapshot.container,
                         ) {
@@ -79,6 +79,10 @@ pub async fn run(
                                 continue;
                             }
                         };
+                        // Пишем всегда в MKV (crash-safe); remux в целевой контейнер —
+                        // в UI на стороне RecordingStopped.
+                        let output_path =
+                            output::intermediate_mkv_path(&final_path, snapshot.container);
 
                         let fd = session.pipewire_fd;
                         current_session = Some(session);
