@@ -81,7 +81,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         let output_dir = directories::UserDirs::new()
-            .and_then(|d| d.video_dir().map(|v| v.join("Recordings")))
+            .and_then(|d| d.video_dir().map(|v| v.join("Ralume")))
             .unwrap_or_else(std::env::temp_dir);
 
         Self {
