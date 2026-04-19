@@ -2,3 +2,4 @@
 //! на внутренние виджеты, которые держатся владельцем (AppShell) для биндингов.
 
 pub mod record;
+pub mod settings;

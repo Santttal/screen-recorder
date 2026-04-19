@@ -44,6 +44,8 @@ impl UiRecordingState {
 pub struct AppShell {
     window: adw::ApplicationWindow,
     page: RecordPage,
+    sidebar_list: gtk::ListBox,
+    stack: gtk::Stack,
     lbl_rec_dot: gtk::Label,
     toast_overlay: adw::ToastOverlay,
     state: Rc<RefCell<UiRecordingState>>,
@@ -103,9 +105,12 @@ impl AppShell {
         stack.add_named(&page.root, Some("record"));
         stack.add_named(&build_placeholder_page("Library", "Откроется в фазе 19.b."), Some("library"));
         stack.add_named(&build_placeholder_page("AI", "Откроется в фазе 19.c."), Some("ai"));
-        stack.add_named(&build_placeholder_page("Settings", "Переедет из отдельного окна в фазе 19.a.6."), Some("settings"));
+        stack.add_named(
+            &crate::ui::pages::settings::build(settings.clone()),
+            Some("settings"),
+        );
 
-        let sidebar = build_sidebar(&stack);
+        let (sidebar, sidebar_list) = build_sidebar(&stack);
 
         let body = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
@@ -130,6 +135,8 @@ impl AppShell {
         let this = Rc::new(Self {
             window,
             page,
+            sidebar_list,
+            stack,
             lbl_rec_dot,
             toast_overlay,
             state: Rc::new(RefCell::new(UiRecordingState::Idle)),
@@ -188,6 +195,22 @@ impl AppShell {
 
     pub fn window(&self) -> &adw::ApplicationWindow {
         &self.window
+    }
+
+    /// Переключиться на раздел в sidebar по имени ("record", "library", "ai", "settings").
+    pub fn select_view(&self, name: &str) {
+        // Найти ListBoxRow с соответствующим widget_name и выбрать его —
+        // connect_row_selected уже синхронизирует Stack::visible_child.
+        let mut idx = 0;
+        while let Some(row) = self.sidebar_list.row_at_index(idx) {
+            if row.widget_name() == name {
+                self.sidebar_list.select_row(Some(&row));
+                return;
+            }
+            idx += 1;
+        }
+        // Fallback: если row не нашли (не должно случиться) — просто Stack.
+        self.stack.set_visible_child_name(name);
     }
 
     pub fn sources_snapshot(&self) -> Sources {
@@ -622,7 +645,9 @@ impl AppShell {
 
 /// Строит левую навигационную панель (ListBox) и связывает её со `stack`.
 /// Секции Record / Library / AI / Settings переключают видимого ребёнка Stack.
-fn build_sidebar(stack: &gtk::Stack) -> gtk::Box {
+/// Возвращает `(container, list)` — `list` нужен для программной навигации
+/// (app.preferences → select "settings").
+fn build_sidebar(stack: &gtk::Stack) -> (gtk::Box, gtk::ListBox) {
     let list = gtk::ListBox::builder()
         .selection_mode(gtk::SelectionMode::Single)
         .vexpand(true)
@@ -698,7 +723,7 @@ fn build_sidebar(stack: &gtk::Stack) -> gtk::Box {
     container.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
     container.append(&footer);
 
-    container
+    (container, list)
 }
 
 fn make_sidebar_row(label: &str, icon: &str) -> gtk::ListBoxRow {

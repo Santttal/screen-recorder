@@ -19,9 +19,8 @@ mod ui;
 
 use config::SharedSettings;
 use ui::events::{RecorderEvent, UiCommand};
-use ui::preferences::PreferencesWindow;
-use ui::style;
 use ui::shell::AppShell;
+use ui::style;
 
 const APP_ID: &str = "dev.local.Ralume";
 
@@ -110,10 +109,15 @@ fn wire_window_actions(app: &Application, window: &Rc<AppShell>, settings: Share
     });
     app.add_action(&act_about);
 
+    // app.preferences теперь переключает sidebar-вкладку на "Настройки",
+    // вместо открытия отдельного adw::PreferencesWindow (phase 19.a.6).
     let act_prefs = gio::SimpleAction::new("preferences", None);
-    let parent_window = window.window().clone();
+    let weak = Rc::downgrade(window);
+    let _ = settings; // unused now — настройки биндятся внутри settings-страницы
     act_prefs.connect_activate(move |_, _| {
-        PreferencesWindow::present(&parent_window, settings.clone());
+        if let Some(shell) = weak.upgrade() {
+            shell.select_view("settings");
+        }
     });
     app.add_action(&act_prefs);
 

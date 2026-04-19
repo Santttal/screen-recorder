@@ -2,6 +2,5 @@
 
 pub mod events;
 pub mod pages;
-pub mod preferences;
 pub mod shell;
 pub mod style;

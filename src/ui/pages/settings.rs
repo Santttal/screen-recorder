@@ -1,3 +1,10 @@
+//! Экран «Настройки». Phase 19.a.6 — переезд из отдельного
+//! `adw::PreferencesWindow` в in-app Stack child.
+//!
+//! Все группы складываются в единый `adw::PreferencesPage` —
+//! он сам делает скроллинг и отступы. UX: одна длинная страница вместо
+//! нескольких вкладок (как в финальном дизайне Ralume AI).
+
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -8,47 +15,38 @@ use libadwaita as adw;
 use gtk4 as gtk;
 
 use crate::config::{
-    AudioMode, Container, CursorMode, EncoderHint, RegionMode, Settings, SharedSettings,
+    AudioMode, CaptureSource, Container, CursorMode, EncoderHint, Settings, SharedSettings,
     TranscriptionModel, VideoCodec,
 };
 use crate::recorder::encoders::detect_available_encoders;
 
 const SAVE_DEBOUNCE_MS: u64 = 500;
 
-#[allow(dead_code)]
-pub struct PreferencesWindow {
-    window: adw::PreferencesWindow,
-    // settings/save_pending удерживаются Rc-ами внутри замыканий, держим ref для симметрии.
-    settings: SharedSettings,
-    save_pending: Rc<RefCell<Option<glib::SourceId>>>,
-}
+/// Построить Settings-страницу. Корневой widget — `adw::PreferencesPage`
+/// (имеет встроенный скролл и отступы).
+pub fn build(settings: SharedSettings) -> gtk::Widget {
+    let page = adw::PreferencesPage::new();
 
-impl PreferencesWindow {
-    pub fn present(parent: &adw::ApplicationWindow, settings: SharedSettings) {
-        let this = Rc::new(Self::build(parent, settings));
-        this.window.present();
-    }
+    let save_pending: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
 
-    fn build(parent: &adw::ApplicationWindow, settings: SharedSettings) -> Self {
-        let window = adw::PreferencesWindow::builder()
-            .transient_for(parent)
-            .modal(true)
-            .search_enabled(false)
-            .build();
+    // Общие настройки: папка, контейнер, источник.
+    page.add(&build_general_group(&settings, &save_pending));
 
-        let save_pending = Rc::new(RefCell::new(None));
+    // Настройки записи (кодек, FPS, битрейт, энкодер, курсор).
+    page.add(&build_recording_group(&settings, &save_pending));
 
-        window.add(&build_recording_page(&settings, &save_pending));
-        window.add(&build_audio_page(&settings, &save_pending));
-        window.add(&build_stt_page(&settings, &save_pending));
-        window.add(&build_hotkeys_page(&settings, &save_pending));
+    // Аудио.
+    page.add(&build_audio_group(&settings, &save_pending));
 
-        Self {
-            window,
-            settings,
-            save_pending,
-        }
-    }
+    // Распознавание речи (OpenAI).
+    page.add(&build_stt_api_group(&settings, &save_pending));
+    page.add(&build_stt_model_group(&settings, &save_pending));
+    page.add(&build_stt_lang_group(&settings, &save_pending));
+
+    // Горячие клавиши.
+    page.add(&build_hotkeys_group(&settings, &save_pending));
+
+    page.upcast()
 }
 
 fn schedule_save(settings: &SharedSettings, save_pending: &Rc<RefCell<Option<glib::SourceId>>>) {
@@ -73,25 +71,18 @@ fn schedule_save(settings: &SharedSettings, save_pending: &Rc<RefCell<Option<gli
     *save_pending.borrow_mut() = Some(source);
 }
 
-fn build_recording_page(
+// -------------------- Группы --------------------
+
+fn build_general_group(
     settings: &SharedSettings,
     save_pending: &Rc<RefCell<Option<glib::SourceId>>>,
-) -> adw::PreferencesPage {
-    let page = adw::PreferencesPage::builder()
-        .title("Запись")
-        .icon_name("video-x-generic-symbolic")
-        .build();
-
-    // ── Группа «Файл»
-    let out_group = adw::PreferencesGroup::builder()
-        .title("Файл")
-        .build();
+) -> adw::PreferencesGroup {
+    let group = adw::PreferencesGroup::builder().title("Общие").build();
 
     let out_row = adw::ActionRow::builder()
         .title("Папка для записей")
         .subtitle(settings.read().unwrap().output_dir.display().to_string())
         .build();
-
     let pick_btn = gtk::Button::builder()
         .valign(gtk::Align::Center)
         .icon_name("document-open-symbolic")
@@ -103,28 +94,19 @@ fn build_recording_page(
         let settings = settings.clone();
         let save_pending = save_pending.clone();
         let row = out_row.clone();
-        let page_weak = page.downgrade();
+        let group_weak = group.downgrade();
         pick_btn.connect_clicked(move |_btn| {
             let dialog = gtk::FileChooserNative::new(
                 Some("Выбрать папку для записей"),
-                page_weak
+                group_weak
                     .upgrade()
-                    .and_then(|p| p.root())
+                    .and_then(|g| g.root())
                     .and_then(|r| r.downcast::<gtk::Window>().ok())
                     .as_ref(),
                 gtk::FileChooserAction::SelectFolder,
                 Some("Выбрать"),
                 Some("Отмена"),
             );
-            if let Ok(cur) =
-                gio::File::for_path(&settings.read().unwrap().output_dir).query_info(
-                    "standard::type",
-                    gio::FileQueryInfoFlags::NONE,
-                    gio::Cancellable::NONE,
-                )
-            {
-                let _ = cur; // preserved for future: restore last dir
-            }
             let settings = settings.clone();
             let save_pending = save_pending.clone();
             let row = row.clone();
@@ -142,11 +124,52 @@ fn build_recording_page(
             dialog.show();
         });
     }
-
     out_row.add_suffix(&pick_btn);
-    out_group.add(&out_row);
+    group.add(&out_row);
 
-    // Container
+    // Capture source (Screen / Window) — зеркалит card-кнопки на Record-экране.
+    let source_row = make_combo_row(
+        "Источник по умолчанию",
+        &["Весь экран", "Окно"],
+        capture_source_to_index(settings.read().unwrap().capture_source),
+    );
+    {
+        let settings = settings.clone();
+        let save_pending = save_pending.clone();
+        source_row.connect_selected_notify(move |row| {
+            settings.write().unwrap().capture_source = capture_source_from_index(row.selected());
+            schedule_save(&settings, &save_pending);
+        });
+    }
+    group.add(&source_row);
+
+    let cursor_row = make_combo_row(
+        "Курсор",
+        &["Скрыт", "Впечатан в видео", "Отдельная дорожка"],
+        cursor_to_index(settings.read().unwrap().cursor_mode),
+    );
+    {
+        let settings = settings.clone();
+        let save_pending = save_pending.clone();
+        cursor_row.connect_selected_notify(move |row| {
+            settings.write().unwrap().cursor_mode = cursor_from_index(row.selected());
+            schedule_save(&settings, &save_pending);
+        });
+    }
+    group.add(&cursor_row);
+
+    group
+}
+
+fn build_recording_group(
+    settings: &SharedSettings,
+    save_pending: &Rc<RefCell<Option<glib::SourceId>>>,
+) -> adw::PreferencesGroup {
+    let group = adw::PreferencesGroup::builder()
+        .title("Запись")
+        .description("Параметры применяются к следующей записи.")
+        .build();
+
     let container_row = make_combo_row(
         "Контейнер",
         &["MKV (рекомендуется)", "MP4", "WebM"],
@@ -160,11 +183,7 @@ fn build_recording_page(
             schedule_save(&settings, &save_pending);
         });
     }
-    out_group.add(&container_row);
-    page.add(&out_group);
-
-    // ── Группа «Видео»
-    let video_group = adw::PreferencesGroup::builder().title("Видео").build();
+    group.add(&container_row);
 
     let codec_row = make_combo_row(
         "Кодек",
@@ -179,11 +198,11 @@ fn build_recording_page(
             schedule_save(&settings, &save_pending);
         });
     }
-    video_group.add(&codec_row);
+    group.add(&codec_row);
 
-    video_group.add(&make_spin_row(
-        "FPS",
-        "Кадров в секунду (5 достаточно для статичного экрана)",
+    group.add(&make_spin_row(
+        "Частота кадров (fps)",
+        "От 5 до 60 — выше частота, больше файл.",
         5,
         60,
         1,
@@ -193,9 +212,9 @@ fn build_recording_page(
         save_pending,
     ));
 
-    video_group.add(&make_spin_row(
+    group.add(&make_spin_row(
         "Видео-битрейт (kbps)",
-        "Выше битрейт — выше качество и размер",
+        "Выше битрейт — выше качество и размер.",
         500,
         20000,
         500,
@@ -207,7 +226,11 @@ fn build_recording_page(
 
     let hint_row = make_combo_row(
         "Энкодер",
-        &["Авто (HW → SW fallback)", "Только HW (VAAPI/NVENC/QSV)", "Только SW (x264enc)"],
+        &[
+            "Авто (HW → SW fallback)",
+            "Только HW (VAAPI / NVENC / QSV)",
+            "Только SW (x264enc)",
+        ],
         encoder_hint_to_index(settings.read().unwrap().encoder_hint),
     );
     {
@@ -218,18 +241,18 @@ fn build_recording_page(
             schedule_save(&settings, &save_pending);
         });
     }
-    video_group.add(&hint_row);
+    group.add(&hint_row);
 
     let detect_row = adw::ActionRow::builder()
         .title("Проверить доступные энкодеры")
-        .subtitle("Откроет список factory-имён, обнаруженных GStreamer")
+        .subtitle("Список factory-имён, обнаруженных GStreamer")
         .build();
     let detect_btn = gtk::Button::builder()
         .label("Показать")
         .valign(gtk::Align::Center)
         .build();
     detect_btn.add_css_class("flat");
-    let page_weak = page.downgrade();
+    let group_weak = group.downgrade();
     detect_btn.connect_clicked(move |_| {
         let encoders = detect_available_encoders();
         let body = if encoders.is_empty() {
@@ -241,9 +264,9 @@ fn build_recording_page(
                 .collect::<Vec<_>>()
                 .join("\n")
         };
-        let parent_win = page_weak
+        let parent_win = group_weak
             .upgrade()
-            .and_then(|p| p.root())
+            .and_then(|g| g.root())
             .and_then(|r| r.downcast::<gtk::Window>().ok());
         let dialog = gtk::MessageDialog::builder()
             .modal(true)
@@ -259,59 +282,19 @@ fn build_recording_page(
         dialog.present();
     });
     detect_row.add_suffix(&detect_btn);
-    video_group.add(&detect_row);
+    group.add(&detect_row);
 
-    page.add(&video_group);
-
-    // ── Группа «Источник»
-    let src_group = adw::PreferencesGroup::builder().title("Источник").build();
-
-    let region_row = make_combo_row(
-        "Область",
-        &["Весь экран", "Монитор", "Окно"],
-        region_to_index(settings.read().unwrap().region_mode),
-    );
-    {
-        let settings = settings.clone();
-        let save_pending = save_pending.clone();
-        region_row.connect_selected_notify(move |row| {
-            settings.write().unwrap().region_mode = region_from_index(row.selected());
-            schedule_save(&settings, &save_pending);
-        });
-    }
-    src_group.add(&region_row);
-
-    let cursor_row = make_combo_row(
-        "Курсор",
-        &["Скрыт", "Впечатан в видео", "Отдельная дорожка"],
-        cursor_to_index(settings.read().unwrap().cursor_mode),
-    );
-    {
-        let settings = settings.clone();
-        let save_pending = save_pending.clone();
-        cursor_row.connect_selected_notify(move |row| {
-            settings.write().unwrap().cursor_mode = cursor_from_index(row.selected());
-            schedule_save(&settings, &save_pending);
-        });
-    }
-    src_group.add(&cursor_row);
-    page.add(&src_group);
-
-    page
+    group
 }
 
-fn build_audio_page(
+fn build_audio_group(
     settings: &SharedSettings,
     save_pending: &Rc<RefCell<Option<glib::SourceId>>>,
-) -> adw::PreferencesPage {
-    let page = adw::PreferencesPage::builder()
-        .title("Аудио")
-        .icon_name("audio-x-generic-symbolic")
-        .build();
-    let group = adw::PreferencesGroup::builder().title("Звук").build();
+) -> adw::PreferencesGroup {
+    let group = adw::PreferencesGroup::builder().title("Аудио").build();
 
     let mode_row = make_combo_row(
-        "Режим аудио",
+        "Режим",
         &[
             "Отдельные дорожки",
             "Микс в одну дорожку (рекомендуется для live)",
@@ -330,7 +313,7 @@ fn build_audio_page(
 
     group.add(&make_spin_row(
         "Аудио-битрейт (kbps)",
-        "Для голоса хватит 64–96, для музыки 128–192",
+        "Для голоса 64–96, для музыки 128–192.",
         32,
         320,
         16,
@@ -340,21 +323,14 @@ fn build_audio_page(
         save_pending,
     ));
 
-    page.add(&group);
-    page
+    group
 }
 
-fn build_stt_page(
+fn build_stt_api_group(
     settings: &SharedSettings,
     save_pending: &Rc<RefCell<Option<glib::SourceId>>>,
-) -> adw::PreferencesPage {
-    let page = adw::PreferencesPage::builder()
-        .title("Распознавание речи")
-        .icon_name("audio-input-microphone-symbolic")
-        .build();
-
-    // ── API
-    let api_group = adw::PreferencesGroup::builder()
+) -> adw::PreferencesGroup {
+    let group = adw::PreferencesGroup::builder()
         .title("OpenAI API")
         .description("Ключ хранится в ~/.config/ralume/settings.toml (chmod 600).")
         .build();
@@ -399,13 +375,17 @@ fn build_stt_page(
     key_row.add_suffix(&entry);
     key_row.add_suffix(&reveal_btn);
     key_row.set_activatable_widget(Some(&entry));
-    api_group.add(&key_row);
-    page.add(&api_group);
+    group.add(&key_row);
+    group
+}
 
-    // ── Модель
-    let model_group = adw::PreferencesGroup::builder().title("Модель").build();
+fn build_stt_model_group(
+    settings: &SharedSettings,
+    save_pending: &Rc<RefCell<Option<glib::SourceId>>>,
+) -> adw::PreferencesGroup {
+    let group = adw::PreferencesGroup::builder().title("Модель").build();
     let model_row = make_combo_row(
-        "Модель",
+        "Модель распознавания",
         &[
             "GPT-4o Mini Transcribe ($0.003/мин, рекомендуется)",
             "GPT-4o Transcribe ($0.006/мин, качество)",
@@ -431,13 +411,17 @@ fn build_stt_page(
             schedule_save(&settings, &save_pending);
         });
     }
-    model_group.add(&model_row);
-    model_group.add(&desc_row);
-    page.add(&model_group);
+    group.add(&model_row);
+    group.add(&desc_row);
+    group
+}
 
-    // ── Язык
-    let lang_group = adw::PreferencesGroup::builder()
-        .title("Параметры")
+fn build_stt_lang_group(
+    settings: &SharedSettings,
+    save_pending: &Rc<RefCell<Option<glib::SourceId>>>,
+) -> adw::PreferencesGroup {
+    let group = adw::PreferencesGroup::builder()
+        .title("Язык и лимиты")
         .description("Оставьте язык пустым для авто-определения. Примеры: ru, en.")
         .build();
     let lang_row = adw::ActionRow::builder().title("Язык").build();
@@ -452,7 +436,8 @@ fn build_stt_page(
         let save_pending = save_pending.clone();
         lang_entry.connect_changed(move |e| {
             let txt = e.text().to_string();
-            let valid = txt.is_empty() || (txt.len() == 2 && txt.chars().all(|c| c.is_ascii_alphabetic()));
+            let valid =
+                txt.is_empty() || (txt.len() == 2 && txt.chars().all(|c| c.is_ascii_alphabetic()));
             if valid {
                 e.remove_css_class("error");
                 settings.write().unwrap().transcription_language = txt.to_lowercase();
@@ -464,11 +449,11 @@ fn build_stt_page(
     }
     lang_row.add_suffix(&lang_entry);
     lang_row.set_activatable_widget(Some(&lang_entry));
-    lang_group.add(&lang_row);
+    group.add(&lang_row);
 
     let help_row = adw::ActionRow::builder()
         .title("Лимит файла — 25 МБ")
-        .subtitle("Длинные записи автоматически делятся на части и склеиваются в один .txt")
+        .subtitle("Длинные записи делятся на части и склеиваются в один .txt")
         .build();
     let docs_btn = gtk::Button::builder()
         .label("Документация")
@@ -484,37 +469,23 @@ fn build_stt_page(
         }
     });
     help_row.add_suffix(&docs_btn);
-    lang_group.add(&help_row);
-    page.add(&lang_group);
+    group.add(&help_row);
 
-    page
+    group
 }
 
-fn model_description(m: TranscriptionModel) -> &'static str {
-    match m {
-        TranscriptionModel::Whisper1 => "Классика: таймкоды и SRT/VTT, качество ниже чем 4o на шумных записях.",
-        TranscriptionModel::Gpt4oTranscribe => "Высшее качество на русском и английском; response_format только text/json.",
-        TranscriptionModel::Gpt4oMiniTranscribe => "Вдвое дешевле, качество близко к gpt-4o-transcribe; хороший дефолт.",
-        TranscriptionModel::Gpt4oTranscribeDiarize => "Делит дорожку по дикторам — полезно для созвонов.",
-    }
-}
-
-fn build_hotkeys_page(
+fn build_hotkeys_group(
     settings: &SharedSettings,
     save_pending: &Rc<RefCell<Option<glib::SourceId>>>,
-) -> adw::PreferencesPage {
-    let page = adw::PreferencesPage::builder()
-        .title("Горячие клавиши")
-        .icon_name("input-keyboard-symbolic")
-        .build();
+) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::builder()
-        .title("Глобальные клавиши")
-        .description("Будут зарегистрированы через xdg-desktop-portal в Фазе 9.")
+        .title("Горячие клавиши")
+        .description("Будут зарегистрированы через xdg-desktop-portal в Phase 9.1.")
         .build();
 
     let hotkey_row = adw::ActionRow::builder()
         .title("Start / Stop")
-        .subtitle("Формат GTK-акселератора, например &lt;Ctrl&gt;&lt;Alt&gt;R")
+        .subtitle("Формат GTK-акселератора, например <Ctrl><Alt>R")
         .build();
     let entry = gtk::Entry::builder()
         .valign(gtk::Align::Center)
@@ -540,13 +511,13 @@ fn build_hotkeys_page(
     hotkey_row.set_activatable_widget(Some(&entry));
     group.add(&hotkey_row);
 
-    page.add(&group);
-    page
+    group
 }
+
+// -------------------- helpers --------------------
 
 fn make_combo_row(title: &str, options: &[&str], selected: u32) -> adw::ComboRow {
     let model = gtk::StringList::new(options);
-    
     adw::ComboRow::builder()
         .title(title)
         .model(&model)
@@ -588,7 +559,24 @@ fn make_spin_row(
     row
 }
 
-// ── helpers: enum ↔ index
+fn model_description(m: TranscriptionModel) -> &'static str {
+    match m {
+        TranscriptionModel::Whisper1 => {
+            "Классика: таймкоды и SRT/VTT, качество ниже чем 4o на шумных записях."
+        }
+        TranscriptionModel::Gpt4oTranscribe => {
+            "Высшее качество на русском и английском; response_format только text/json."
+        }
+        TranscriptionModel::Gpt4oMiniTranscribe => {
+            "Вдвое дешевле, качество близко к gpt-4o-transcribe; хороший дефолт."
+        }
+        TranscriptionModel::Gpt4oTranscribeDiarize => {
+            "Делит дорожку по дикторам — полезно для созвонов."
+        }
+    }
+}
+
+// -------- enum <-> index --------
 
 fn container_to_index(c: Container) -> u32 {
     match c {
@@ -682,17 +670,15 @@ fn model_from_index(i: u32) -> TranscriptionModel {
     }
 }
 
-fn region_to_index(m: RegionMode) -> u32 {
-    match m {
-        RegionMode::FullScreen => 0,
-        RegionMode::Monitor => 1,
-        RegionMode::Window => 2,
+fn capture_source_to_index(c: CaptureSource) -> u32 {
+    match c {
+        CaptureSource::Screen => 0,
+        CaptureSource::Window => 1,
     }
 }
-fn region_from_index(i: u32) -> RegionMode {
+fn capture_source_from_index(i: u32) -> CaptureSource {
     match i {
-        0 => RegionMode::FullScreen,
-        2 => RegionMode::Window,
-        _ => RegionMode::Monitor,
+        1 => CaptureSource::Window,
+        _ => CaptureSource::Screen,
     }
 }
