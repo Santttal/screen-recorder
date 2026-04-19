@@ -36,7 +36,7 @@ pub async fn run(
 
                 let _ = evt_tx.send(RecorderEvent::PortalOpened).await;
 
-                match open_or_cancel(parent, token, snapshot.cursor_mode).await {
+                match open_or_cancel(parent, token, snapshot.cursor_mode, snapshot.capture_source).await {
                     Ok(OpenOutcome::Opened(session)) => {
                         let Some(node_id) = session.primary_node_id() else {
                             tracing::warn!("portal returned no streams");

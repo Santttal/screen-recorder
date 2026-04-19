@@ -3,6 +3,6 @@
 pub mod settings;
 
 pub use settings::{
-    load, save, shared, AudioMode, Container, CursorMode, EncoderHint, RegionMode, Settings,
-    SharedSettings, TranscriptionModel, VideoCodec,
+    load, save, shared, AudioMode, CaptureSource, Container, CursorMode, EncoderHint, RegionMode,
+    Settings, SharedSettings, TranscriptionModel, VideoCodec,
 };

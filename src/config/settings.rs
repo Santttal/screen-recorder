@@ -54,6 +54,16 @@ pub enum RegionMode {
     Window,
 }
 
+/// Источник захвата экрана (UI-вариант). Phase 19.a.5.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CaptureSource {
+    /// Весь экран (MONITOR в portal-терминах).
+    Screen,
+    /// Конкретное окно — portal покажет window-picker.
+    Window,
+}
+
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum EncoderHint {
@@ -111,6 +121,7 @@ pub struct Settings {
     pub audio_mode: AudioMode,
     pub cursor_mode: CursorMode,
     pub region_mode: RegionMode,
+    pub capture_source: CaptureSource,
     pub encoder_hint: EncoderHint,
     pub hotkey_start_stop: String,
     pub transcription_enabled: bool,
@@ -135,6 +146,7 @@ impl Default for Settings {
             audio_mode: AudioMode::Mixed,
             cursor_mode: CursorMode::Embedded,
             region_mode: RegionMode::Monitor,
+            capture_source: CaptureSource::Screen,
             encoder_hint: EncoderHint::Auto,
             hotkey_start_stop: "<Ctrl><Alt>R".to_owned(),
             transcription_enabled: false,

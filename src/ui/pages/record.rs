@@ -10,15 +10,7 @@ use adw::prelude::*;
 use libadwaita as adw;
 use gtk4 as gtk;
 
-use crate::config::SharedSettings;
-
-/// Выбор источника захвата экрана. Храним как UI-side state в phase 19.a.4.
-/// В 19.a.5 переезжает в `Settings.capture_source` и привязывается к portal.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CaptureSource {
-    Screen,
-    Window,
-}
+use crate::config::{CaptureSource, SharedSettings};
 
 /// Виджеты Record-страницы, за которые держится AppShell.
 #[allow(dead_code)]
@@ -68,7 +60,7 @@ pub fn build(settings: &SharedSettings) -> RecordPage {
     root.append(&subtitle);
 
     // ----- Source cards -----
-    let (source_group, card_screen, card_window, capture_source) = build_source_group();
+    let (source_group, card_screen, card_window, capture_source) = build_source_group(settings);
     root.append(&source_group);
 
     // ----- Audio group -----
@@ -158,7 +150,9 @@ pub fn build(settings: &SharedSettings) -> RecordPage {
     }
 }
 
-fn build_source_group() -> (gtk::Box, gtk::ToggleButton, gtk::ToggleButton, Rc<RefCell<CaptureSource>>) {
+fn build_source_group(
+    settings: &SharedSettings,
+) -> (gtk::Box, gtk::ToggleButton, gtk::ToggleButton, Rc<RefCell<CaptureSource>>) {
     let container = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
         .spacing(10)
@@ -180,12 +174,14 @@ fn build_source_group() -> (gtk::Box, gtk::ToggleButton, gtk::ToggleButton, Rc<R
         .selection_mode(gtk::SelectionMode::None)
         .build();
 
+    let initial = settings.read().unwrap().capture_source;
+
     let card_screen = make_source_card(
         "video-display-symbolic",
         "Весь экран",
         "Запись основного дисплея целиком.",
     );
-    card_screen.set_active(true);
+    card_screen.set_active(matches!(initial, CaptureSource::Screen));
 
     let card_window = make_source_card(
         "window-new-symbolic",
@@ -193,13 +189,14 @@ fn build_source_group() -> (gtk::Box, gtk::ToggleButton, gtk::ToggleButton, Rc<R
         "Выбор конкретного окна приложения.",
     );
     card_window.set_group(Some(&card_screen));
+    card_window.set_active(matches!(initial, CaptureSource::Window));
 
     flow.append(&card_screen);
     flow.append(&card_window);
     container.append(&flow);
 
     // Info-block под картами (разрешение / монитор / формат).
-    // В 19.a.4 показываем статический текст; живые данные — когда будет доступ
+    // В 19.a.5 показываем статический текст; живые данные — когда будет доступ
     // к PortalState (уже хранится в recorder-loop, но не читается UI сейчас).
     let info = gtk::Label::builder()
         .label("Нативное разрешение монитора · H.264")
@@ -210,26 +207,41 @@ fn build_source_group() -> (gtk::Box, gtk::ToggleButton, gtk::ToggleButton, Rc<R
     info.set_margin_top(4);
     container.append(&info);
 
-    let capture_source = Rc::new(RefCell::new(CaptureSource::Screen));
+    let capture_source = Rc::new(RefCell::new(initial));
 
     {
         let cs = capture_source.clone();
+        let settings = settings.clone();
         card_screen.connect_toggled(move |b| {
-            if b.is_active() {
-                *cs.borrow_mut() = CaptureSource::Screen;
+            if !b.is_active() {
+                return;
             }
+            *cs.borrow_mut() = CaptureSource::Screen;
+            settings.write().unwrap().capture_source = CaptureSource::Screen;
+            persist(&settings);
         });
     }
     {
         let cs = capture_source.clone();
+        let settings = settings.clone();
         card_window.connect_toggled(move |b| {
-            if b.is_active() {
-                *cs.borrow_mut() = CaptureSource::Window;
+            if !b.is_active() {
+                return;
             }
+            *cs.borrow_mut() = CaptureSource::Window;
+            settings.write().unwrap().capture_source = CaptureSource::Window;
+            persist(&settings);
         });
     }
 
     (container, card_screen, card_window, capture_source)
+}
+
+fn persist(settings: &SharedSettings) {
+    let snapshot = settings.read().unwrap().clone();
+    if let Err(e) = crate::config::save(&snapshot) {
+        tracing::warn!(%e, "failed to persist settings");
+    }
 }
 
 fn make_source_card(icon_name: &str, title: &str, desc: &str) -> gtk::ToggleButton {
