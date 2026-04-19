@@ -3,4 +3,5 @@
 
 pub mod library;
 pub mod record;
+pub mod recording_detail;
 pub mod settings;

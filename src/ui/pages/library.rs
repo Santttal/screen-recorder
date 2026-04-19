@@ -123,6 +123,11 @@ impl LibraryPage {
         *self.on_open.borrow_mut() = Some(Box::new(f));
     }
 
+    /// Текущий кеш записей — нужен shell.rs чтобы найти Recording по path.
+    pub fn items_cache(&self) -> Vec<Recording> {
+        self.items.borrow().clone()
+    }
+
     /// Пересканировать директорию и перестроить сетку.
     pub fn refresh(self: &Rc<Self>) {
         let dir = self.settings.read().unwrap().output_dir.clone();

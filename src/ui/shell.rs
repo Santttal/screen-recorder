@@ -113,6 +113,10 @@ impl AppShell {
         let library_page = crate::ui::pages::library::LibraryPage::new(settings.clone());
         stack.add_named(&library_page.root, Some("library"));
 
+        // Recording detail (phase 19.b.5) — показывается после клика по карточке.
+        let detail_page = crate::ui::pages::recording_detail::RecordingDetailPage::new();
+        stack.add_named(&detail_page.root, Some("recording-detail"));
+
         stack.add_named(&build_placeholder_page("AI", "Откроется в фазе 19.c."), Some("ai"));
         stack.add_named(
             &crate::ui::pages::settings::build(settings.clone()),
@@ -135,17 +139,35 @@ impl AppShell {
             });
         }
 
-        // Переход на Recording detail (phase 19.b.5) — пока просто открываем
-        // файл во внешнем плеере; в 19.b.5 заменим на navigation в detail-page.
-        library_page.set_on_open(|path| {
-            let uri = format!("file://{}", path.display());
-            if let Err(e) = gtk::gio::AppInfo::launch_default_for_uri(
-                &uri,
-                gtk::gio::AppLaunchContext::NONE,
-            ) {
-                tracing::warn!(%e, "failed to open recording externally");
-            }
-        });
+        // Library → клик по карточке переключает на Recording detail.
+        {
+            let stack_weak = stack.downgrade();
+            let detail_ref = detail_page.clone();
+            let library_ref = library_page.clone();
+            library_page.set_on_open(move |path| {
+                // Найти Recording в кеше library по path.
+                let rec = library_ref
+                    .items_cache()
+                    .into_iter()
+                    .find(|r| r.path == path);
+                if let Some(rec) = rec {
+                    detail_ref.show_recording(rec);
+                    if let Some(s) = stack_weak.upgrade() {
+                        s.set_visible_child_name("recording-detail");
+                    }
+                }
+            });
+        }
+
+        // Recording detail → Back → вернуться в Library.
+        {
+            let stack_weak = stack.downgrade();
+            detail_page.set_on_back(move || {
+                if let Some(s) = stack_weak.upgrade() {
+                    s.set_visible_child_name("library");
+                }
+            });
+        }
 
         let body = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
@@ -801,6 +823,7 @@ fn title_for(view: &str) -> &'static str {
     match view {
         "record" => "Новая запись",
         "library" => "Библиотека",
+        "recording-detail" => "Запись",
         "ai" => "AI",
         "settings" => "Настройки",
         _ => "Ralume",
