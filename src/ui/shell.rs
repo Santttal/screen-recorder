@@ -515,7 +515,7 @@ impl AppShell {
                         node_id,
                         output_path,
                     } => {
-                        window.on_screencast_ready(fd, node_id, output_path);
+                        window.clone().on_screencast_ready(fd, node_id, output_path);
                     }
                     RecorderEvent::RecordingStarted => {
                         window.cancel_force_null_watchdog();
@@ -620,6 +620,25 @@ impl AppShell {
     }
 
     fn on_screencast_ready(
+        self: Rc<Self>,
+        fd: std::os::fd::RawFd,
+        node_id: u32,
+        output_path: std::path::PathBuf,
+    ) {
+        let countdown = self.settings.read().unwrap().countdown_seconds;
+        let parent = self.window.clone();
+        let this = self.clone();
+        let start_now = move || {
+            this.start_pipeline_now(fd, node_id, output_path);
+        };
+        if countdown > 0 {
+            crate::ui::overlays::countdown::start(&parent, countdown, start_now);
+        } else {
+            start_now();
+        }
+    }
+
+    fn start_pipeline_now(
         &self,
         fd: std::os::fd::RawFd,
         node_id: u32,
