@@ -32,7 +32,7 @@ pub struct RecordingDetailPage {
     btn_back: gtk::Button,
     title_label: gtk::Label,
     sub_label: gtk::Label,
-    btn_export: gtk::Button,
+    btn_export: gtk::MenuButton,
     btn_more: gtk::MenuButton,
 
     // Player column
@@ -104,11 +104,31 @@ impl RecordingDetailPage {
         title_box.append(&sub_label);
         topbar.append(&title_box);
 
-        let btn_export = gtk::Button::builder()
+        // Export — popover с вариантами Copy / TXT / SRT / VTT (phase 19.b.9).
+        let btn_export = gtk::MenuButton::builder()
             .icon_name("document-save-as-symbolic")
             .tooltip_text("Экспорт…")
             .build();
         btn_export.add_css_class("flat");
+        let export_popover = gtk::Popover::new();
+        let export_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(2)
+            .margin_top(6)
+            .margin_bottom(6)
+            .margin_start(6)
+            .margin_end(6)
+            .build();
+        let btn_copy = flat_popover_button("edit-copy-symbolic", "Копировать текст");
+        let btn_txt = flat_popover_button("document-save-symbolic", "Сохранить как .txt");
+        let btn_srt = flat_popover_button("document-save-symbolic", "Сохранить как .srt");
+        let btn_vtt = flat_popover_button("document-save-symbolic", "Сохранить как .vtt");
+        export_box.append(&btn_copy);
+        export_box.append(&btn_txt);
+        export_box.append(&btn_srt);
+        export_box.append(&btn_vtt);
+        export_popover.set_child(Some(&export_box));
+        btn_export.set_popover(Some(&export_popover));
         topbar.append(&btn_export);
 
         let btn_more = gtk::MenuButton::builder()
@@ -392,6 +412,63 @@ impl RecordingDetailPage {
             });
         }
 
+        // Wire Export buttons (phase 19.b.9).
+        {
+            let current = this.current.clone();
+            btn_copy.connect_clicked(move |_| {
+                let Some(rec) = current.borrow().clone() else {
+                    return;
+                };
+                let txt = read_plain_text(&rec.path);
+                if let Some(d) = gtk::gdk::Display::default() {
+                    d.clipboard().set_text(&txt);
+                }
+                export_popover.popdown();
+            });
+        }
+        {
+            let current = this.current.clone();
+            btn_txt.connect_clicked(move |_| {
+                let Some(rec) = current.borrow().clone() else {
+                    return;
+                };
+                let src = rec.path.with_extension("txt");
+                let dst = rec.path.with_extension("txt.export.txt");
+                if src.is_file() {
+                    let _ = std::fs::copy(&src, &dst);
+                    open_file(&dst);
+                }
+            });
+        }
+        {
+            let current = this.current.clone();
+            btn_srt.connect_clicked(move |_| {
+                let Some(rec) = current.borrow().clone() else {
+                    return;
+                };
+                let segments = load_segments(&rec.path);
+                let srt = to_srt(&segments);
+                let path = rec.path.with_extension("srt");
+                if std::fs::write(&path, srt).is_ok() {
+                    open_file(&path);
+                }
+            });
+        }
+        {
+            let current = this.current.clone();
+            btn_vtt.connect_clicked(move |_| {
+                let Some(rec) = current.borrow().clone() else {
+                    return;
+                };
+                let segments = load_segments(&rec.path);
+                let vtt = to_vtt(&segments);
+                let path = rec.path.with_extension("vtt");
+                if std::fs::write(&path, vtt).is_ok() {
+                    open_file(&path);
+                }
+            });
+        }
+
         this
     }
 
@@ -635,4 +712,93 @@ fn pretty_speaker(raw: &str) -> String {
         Ok(n) => format!("Speaker {}", (b'A' + n.min(25) as u8) as char),
         Err(_) => raw.to_owned(),
     }
+}
+
+fn flat_popover_button(icon: &str, label: &str) -> gtk::Button {
+    let btn = gtk::Button::builder().build();
+    btn.add_css_class("flat");
+    let hbox = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(8)
+        .margin_top(4)
+        .margin_bottom(4)
+        .margin_start(4)
+        .margin_end(4)
+        .build();
+    let ic = gtk::Image::from_icon_name(icon);
+    hbox.append(&ic);
+    let lbl = gtk::Label::new(Some(label));
+    lbl.set_halign(gtk::Align::Start);
+    lbl.set_hexpand(true);
+    hbox.append(&lbl);
+    btn.set_child(Some(&hbox));
+    btn
+}
+
+fn read_plain_text(video_path: &Path) -> String {
+    std::fs::read_to_string(video_path.with_extension("txt")).unwrap_or_default()
+}
+
+fn load_segments(video_path: &Path) -> Vec<crate::transcription::client::Segment> {
+    let json_path = video_path.with_extension("json");
+    if let Ok(raw) = std::fs::read_to_string(&json_path) {
+        if let Ok(segs) =
+            serde_json::from_str::<Vec<crate::transcription::client::Segment>>(&raw)
+        {
+            return segs;
+        }
+    }
+    Vec::new()
+}
+
+fn to_srt(segments: &[crate::transcription::client::Segment]) -> String {
+    let mut out = String::new();
+    for (i, seg) in segments.iter().enumerate() {
+        out.push_str(&format!("{}\n", i + 1));
+        out.push_str(&format!(
+            "{} --> {}\n",
+            srt_timestamp(seg.start),
+            srt_timestamp(seg.end)
+        ));
+        out.push_str(seg.text.trim());
+        out.push_str("\n\n");
+    }
+    out
+}
+
+fn to_vtt(segments: &[crate::transcription::client::Segment]) -> String {
+    let mut out = String::from("WEBVTT\n\n");
+    for seg in segments.iter() {
+        out.push_str(&format!(
+            "{} --> {}\n",
+            vtt_timestamp(seg.start),
+            vtt_timestamp(seg.end)
+        ));
+        out.push_str(seg.text.trim());
+        out.push_str("\n\n");
+    }
+    out
+}
+
+fn srt_timestamp(secs: f64) -> String {
+    let total = secs;
+    let h = (total as i64) / 3600;
+    let m = ((total as i64) % 3600) / 60;
+    let s = (total as i64) % 60;
+    let ms = ((total - total.floor()) * 1000.0) as i64;
+    format!("{h:02}:{m:02}:{s:02},{ms:03}")
+}
+
+fn vtt_timestamp(secs: f64) -> String {
+    let total = secs;
+    let h = (total as i64) / 3600;
+    let m = ((total as i64) % 3600) / 60;
+    let s = (total as i64) % 60;
+    let ms = ((total - total.floor()) * 1000.0) as i64;
+    format!("{h:02}:{m:02}:{s:02}.{ms:03}")
+}
+
+fn open_file(path: &Path) {
+    let uri = format!("file://{}", path.display());
+    let _ = gio::AppInfo::launch_default_for_uri(&uri, gio::AppLaunchContext::NONE);
 }
