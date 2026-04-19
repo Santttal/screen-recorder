@@ -46,6 +46,9 @@ pub struct AppShell {
     page: RecordPage,
     sidebar_list: gtk::ListBox,
     stack: gtk::Stack,
+    library_page: Rc<crate::ui::pages::library::LibraryPage>,
+    post_page: Rc<crate::ui::pages::post_record::PostRecordPage>,
+    detail_page: Rc<crate::ui::pages::recording_detail::RecordingDetailPage>,
     lbl_rec_dot: gtk::Label,
     toast_overlay: adw::ToastOverlay,
     state: Rc<RefCell<UiRecordingState>>,
@@ -116,6 +119,10 @@ impl AppShell {
         // Recording detail (phase 19.b.5) — показывается после клика по карточке.
         let detail_page = crate::ui::pages::recording_detail::RecordingDetailPage::new();
         stack.add_named(&detail_page.root, Some("recording-detail"));
+
+        // Post-record (phase 19.b.1) — экран после остановки записи.
+        let post_page = crate::ui::pages::post_record::PostRecordPage::new(settings.clone());
+        stack.add_named(&post_page.root, Some("post-record"));
 
         stack.add_named(&build_placeholder_page("AI", "Откроется в фазе 19.c."), Some("ai"));
         stack.add_named(
@@ -194,6 +201,9 @@ impl AppShell {
             page,
             sidebar_list,
             stack,
+            library_page,
+            post_page: post_page.clone(),
+            detail_page,
             lbl_rec_dot,
             toast_overlay,
             state: Rc::new(RefCell::new(UiRecordingState::Idle)),
@@ -205,6 +215,15 @@ impl AppShell {
             evt_tx,
             settings,
         });
+
+        // Post-record: обработать Save / Discard.
+        {
+            let weak_self = Rc::downgrade(&this);
+            post_page.set_on_outcome(move |outcome| {
+                let Some(me) = weak_self.upgrade() else { return };
+                me.handle_post_outcome(outcome);
+            });
+        }
 
         // Показываем toast-подсказку, если Auto выбрали без API-ключа.
         {
@@ -285,6 +304,53 @@ impl AppShell {
         *self.state.borrow()
     }
 
+    /// Реакция на Save / Discard из Post-record экрана (phase 19.b.1).
+    pub fn handle_post_outcome(
+        self: &Rc<Self>,
+        outcome: crate::ui::pages::post_record::PostOutcome,
+    ) {
+        use crate::ui::pages::post_record::PostOutcome;
+        match outcome {
+            PostOutcome::Saved(path) => {
+                self.library_page.refresh();
+                let auto = self.settings.read().unwrap().transcription_enabled;
+                let api_empty = self.settings.read().unwrap().openai_api_key.trim().is_empty();
+                if auto && api_empty {
+                    self.show_toast("Укажите API-ключ OpenAI в Настройках");
+                }
+                if auto && !api_empty {
+                    // Открываем detail, запускаем транскрипцию.
+                    if let Some(rec) = self
+                        .library_page
+                        .items_cache()
+                        .into_iter()
+                        .find(|r| r.path == path)
+                    {
+                        self.detail_page.show_recording(rec);
+                        self.stack.set_visible_child_name("recording-detail");
+                    } else {
+                        self.select_view("library");
+                    }
+                    // Отправляем команду транскрипции.
+                    let cmd_tx = self.cmd_tx.clone();
+                    let p = path.clone();
+                    glib::MainContext::default().spawn_local(async move {
+                        let _ = cmd_tx
+                            .send(UiCommand::TranscribeRequested { video_path: p })
+                            .await;
+                    });
+                } else {
+                    self.select_view("library");
+                }
+                self.show_saved_toast(&path);
+            }
+            PostOutcome::Discarded => {
+                self.select_view("record");
+                self.set_status("Запись удалена");
+            }
+        }
+    }
+
     pub fn set_recording_state(&self, state: UiRecordingState) {
         *self.state.borrow_mut() = state;
         self.lbl_rec_dot
@@ -327,6 +393,7 @@ impl AppShell {
         self.page.card_window.set_sensitive(sensitive);
     }
 
+    #[allow(dead_code)]
     pub fn transcription_enabled(&self) -> bool {
         self.page.seg_auto.is_active()
     }
@@ -455,31 +522,13 @@ impl AppShell {
                                     output_path.clone()
                                 }
                             };
-                        window.set_status(&format!("Сохранено: {}", final_path.display()));
-                        window.show_saved_toast(&final_path);
                         // Закрыть portal-сессию (recorder tokio-задача).
                         let _ = window.cmd_tx.send(UiCommand::StopRequested).await;
-
-                        // Транскрипция: тумблер включён + ключ задан → запускаем.
-                        if window.transcription_enabled() {
-                            let api_empty = window
-                                .settings
-                                .read()
-                                .unwrap()
-                                .openai_api_key
-                                .trim()
-                                .is_empty();
-                            if api_empty {
-                                window.show_toast("Укажите API-ключ OpenAI в Настройках");
-                            } else {
-                                let _ = window
-                                    .cmd_tx
-                                    .send(UiCommand::TranscribeRequested {
-                                        video_path: final_path,
-                                    })
-                                    .await;
-                            }
-                        }
+                        // Навигация на Post-record (phase 19.b.1) — финальное
+                        // решение (Save / Discard / имя) принимает пользователь.
+                        window.post_page.show(final_path);
+                        window.stack.set_visible_child_name("post-record");
+                        window.set_status("Готово к сохранению");
                     }
                     RecorderEvent::Error(msg) => {
                         window.cancel_force_null_watchdog();
@@ -824,6 +873,7 @@ fn title_for(view: &str) -> &'static str {
         "record" => "Новая запись",
         "library" => "Библиотека",
         "recording-detail" => "Запись",
+        "post-record" => "Запись готова",
         "ai" => "AI",
         "settings" => "Настройки",
         _ => "Ralume",
