@@ -94,11 +94,9 @@ window.floating-toolbar-window decoration {
     padding: 6px 10px;
 }
 
-/* Countdown overlay — белые цифры на полупрозрачном тёмном фоне экрана */
+/* Countdown overlay — полностью прозрачное окно; белые цифры с чёрной обводкой */
 window.countdown-window,
-window.countdown-window > * {
-    background: alpha(#000000, 0.25);
-}
+window.countdown-window > *,
 window.countdown-window decoration {
     background: transparent;
     box-shadow: none;
@@ -106,8 +104,14 @@ window.countdown-window decoration {
 }
 .countdown-number {
     color: #ffffff;
-    text-shadow: 0 2px 12px alpha(#000000, 0.7);
     font-weight: 700;
+    /* Тонкая чёрная обводка: 4 смещённые тени + лёгкий halo. */
+    text-shadow:
+        -1px -1px 0 #000000,
+         1px -1px 0 #000000,
+        -1px  1px 0 #000000,
+         1px  1px 0 #000000,
+         0 0 6px alpha(#000000, 0.7);
 }
 
 .floating-toolbar .timer-label {
