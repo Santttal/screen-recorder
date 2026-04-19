@@ -295,11 +295,11 @@ impl LibraryPage {
 }
 
 fn make_card(rec: &Recording, on_open: OpenCallback) -> (gtk::FlowBoxChild, CardHandles) {
-    // Фиксированный размер картиночной области — 260×146 (≈16:9).
-    // Задаём на уровне Overlay/picture_slot, чтобы AspectFrame не коллапсировал,
-    // когда Picture ещё не загружен.
-    const THUMB_W: i32 = 260;
-    const THUMB_H: i32 = 146;
+    // Фиксированный размер картиночной области — 220×124 (≈16:9).
+    // Ширину подобрали так, чтобы при окне 960×640 и sidebar 200px в ряд
+    // помещалось 3 карточки: 220*3 + spacing 18*2 + padding 32*2 ≈ 760 < 760px.
+    const THUMB_W: i32 = 220;
+    const THUMB_H: i32 = 124;
 
     let card = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
@@ -416,6 +416,8 @@ fn make_card(rec: &Recording, on_open: OpenCallback) -> (gtk::FlowBoxChild, Card
     let fbc = gtk::FlowBoxChild::new();
     fbc.set_child(Some(&card));
     fbc.set_focusable(false);
+    fbc.set_halign(gtk::Align::Start);
+    fbc.set_hexpand(false);
 
     let handles = CardHandles {
         picture_slot,
