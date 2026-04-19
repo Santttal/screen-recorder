@@ -21,7 +21,7 @@ use config::SharedSettings;
 use ui::events::{RecorderEvent, UiCommand};
 use ui::preferences::PreferencesWindow;
 use ui::style;
-use ui::window::AppWindow;
+use ui::shell::AppShell;
 
 const APP_ID: &str = "dev.local.Ralume";
 
@@ -58,7 +58,7 @@ fn main() -> glib::ExitCode {
     app.connect_activate(move |app| {
         register_app_actions(app, &cmd_tx);
 
-        let window = AppWindow::new(
+        let window = AppShell::new(
             app,
             cmd_tx_for_window.clone(),
             evt_tx_for_window.clone(),
@@ -93,7 +93,7 @@ fn register_app_actions(app: &Application, cmd_tx: &Sender<UiCommand>) {
 
 }
 
-fn wire_window_actions(app: &Application, window: &Rc<AppWindow>, settings: SharedSettings) {
+fn wire_window_actions(app: &Application, window: &Rc<AppShell>, settings: SharedSettings) {
     let act_about = gio::SimpleAction::new("about", None);
     let parent = window.window().clone();
     act_about.connect_activate(move |_, _| {

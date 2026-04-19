@@ -40,7 +40,7 @@ impl UiRecordingState {
     }
 }
 
-pub struct AppWindow {
+pub struct AppShell {
     window: adw::ApplicationWindow,
     btn_start_stop: gtk::Button,
     lbl_status: gtk::Label,
@@ -62,7 +62,7 @@ pub struct AppWindow {
     settings: SharedSettings,
 }
 
-impl AppWindow {
+impl AppShell {
     pub fn new(
         app: &adw::Application,
         cmd_tx: Sender<UiCommand>,
@@ -72,8 +72,8 @@ impl AppWindow {
         let window = adw::ApplicationWindow::builder()
             .application(app)
             .title("Ralume")
-            .default_width(420)
-            .default_height(320)
+            .default_width(960)
+            .default_height(640)
             .build();
 
         let header = adw::HeaderBar::new();
@@ -176,8 +176,31 @@ impl AppWindow {
         status_row.append(&lbl_status);
         root.append(&status_row);
 
+        // Sidebar + content Stack layout (phase 19.a.3).
+        // The existing Record-page widgets go into stack child "record".
+        // Library / AI / Settings are placeholders for phases 19.a.6 / 19.b / 19.c.
+        let stack = gtk::Stack::builder()
+            .transition_type(gtk::StackTransitionType::Crossfade)
+            .transition_duration(150)
+            .hexpand(true)
+            .vexpand(true)
+            .build();
+        stack.add_named(&root, Some("record"));
+        stack.add_named(&build_placeholder_page("Library", "Откроется в фазе 19.b."), Some("library"));
+        stack.add_named(&build_placeholder_page("AI", "Откроется в фазе 19.c."), Some("ai"));
+        stack.add_named(&build_placeholder_page("Settings", "Переедет из отдельного окна в фазе 19.a.6."), Some("settings"));
+
+        let sidebar = build_sidebar(&stack);
+
+        let body = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .build();
+        body.append(&sidebar);
+        body.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+        body.append(&stack);
+
         let toast_overlay = adw::ToastOverlay::new();
-        toast_overlay.set_child(Some(&root));
+        toast_overlay.set_child(Some(&body));
 
         let main_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
@@ -680,4 +703,120 @@ impl AppWindow {
         });
         dialog.present();
     }
+}
+
+/// Строит левую навигационную панель (ListBox) и связывает её со `stack`.
+/// Секции Record / Library / AI / Settings переключают видимого ребёнка Stack.
+fn build_sidebar(stack: &gtk::Stack) -> gtk::Box {
+    let list = gtk::ListBox::builder()
+        .selection_mode(gtk::SelectionMode::Single)
+        .vexpand(true)
+        .build();
+    list.add_css_class("navigation-sidebar");
+
+    // (name, label, icon)
+    let main_items: &[(&str, &str, &str)] = &[
+        ("record", "Запись", "media-record-symbolic"),
+        ("library", "Библиотека", "folder-videos-symbolic"),
+        ("ai", "AI", "starred-symbolic"),
+    ];
+    let settings_items: &[(&str, &str, &str)] =
+        &[("settings", "Настройки", "emblem-system-symbolic")];
+
+    let mut rows: Vec<(gtk::ListBoxRow, String)> = Vec::new();
+    for (name, label, icon) in main_items {
+        let row = make_sidebar_row(label, icon);
+        row.set_widget_name(name);
+        list.append(&row);
+        rows.push((row, (*name).to_owned()));
+    }
+    let separator = gtk::ListBoxRow::builder().selectable(false).build();
+    separator.set_child(Some(&gtk::Separator::new(gtk::Orientation::Horizontal)));
+    list.append(&separator);
+    for (name, label, icon) in settings_items {
+        let row = make_sidebar_row(label, icon);
+        row.set_widget_name(name);
+        list.append(&row);
+        rows.push((row, (*name).to_owned()));
+    }
+
+    // По умолчанию активна первая (Запись).
+    if let Some((first, _)) = rows.first() {
+        list.select_row(Some(first));
+    }
+
+    let stack_weak = stack.downgrade();
+    list.connect_row_selected(move |_, row| {
+        let Some(row) = row else { return };
+        let Some(stack) = stack_weak.upgrade() else {
+            return;
+        };
+        let name = row.widget_name();
+        if !name.is_empty() {
+            stack.set_visible_child_name(name.as_str());
+        }
+    });
+
+    let container = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .width_request(200)
+        .build();
+    container.add_css_class("sidebar-pane");
+
+    let scroll = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vexpand(true)
+        .child(&list)
+        .build();
+    container.append(&scroll);
+
+    let footer = gtk::Label::builder()
+        .label(&format!("Ralume · v{}", env!("CARGO_PKG_VERSION")))
+        .halign(gtk::Align::Start)
+        .margin_start(14)
+        .margin_end(14)
+        .margin_top(10)
+        .margin_bottom(10)
+        .build();
+    footer.add_css_class("caption");
+    footer.add_css_class("dim-label");
+    container.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+    container.append(&footer);
+
+    container
+}
+
+fn make_sidebar_row(label: &str, icon: &str) -> gtk::ListBoxRow {
+    let row = gtk::ListBoxRow::new();
+    let hbox = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(10)
+        .margin_top(6)
+        .margin_bottom(6)
+        .margin_start(12)
+        .margin_end(12)
+        .build();
+    let image = gtk::Image::from_icon_name(icon);
+    image.set_icon_size(gtk::IconSize::Normal);
+    let lbl = gtk::Label::builder()
+        .label(label)
+        .halign(gtk::Align::Start)
+        .hexpand(true)
+        .build();
+    hbox.append(&image);
+    hbox.append(&lbl);
+    row.set_child(Some(&hbox));
+    row
+}
+
+/// Плейсхолдер для экранов, которые появятся в следующих подфазах.
+fn build_placeholder_page(title: &str, subtitle: &str) -> gtk::Widget {
+    let page = adw::StatusPage::builder()
+        .title(title)
+        .description(subtitle)
+        .icon_name("emblem-synchronizing-symbolic")
+        .vexpand(true)
+        .hexpand(true)
+        .build();
+    page.upcast()
 }

@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use ashpd::WindowIdentifier;
 
 use crate::config::TranscriptionModel;
-use crate::ui::window::Sources;
+use crate::ui::shell::Sources;
 
 #[allow(dead_code)]
 #[derive(Debug)]

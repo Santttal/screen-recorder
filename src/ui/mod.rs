@@ -3,4 +3,4 @@
 pub mod events;
 pub mod preferences;
 pub mod style;
-pub mod window;
+pub mod shell;
