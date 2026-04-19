@@ -8,6 +8,7 @@
 pub mod audio;
 pub mod chunks;
 pub mod client;
+pub mod queue;
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
