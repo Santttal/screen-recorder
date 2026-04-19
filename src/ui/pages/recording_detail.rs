@@ -136,6 +136,23 @@ impl RecordingDetailPage {
             .tooltip_text("Ещё")
             .build();
         btn_more.add_css_class("flat");
+        // More popover (phase 19.b.10).
+        let more_popover = gtk::Popover::new();
+        let more_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(2)
+            .margin_top(6)
+            .margin_bottom(6)
+            .margin_start(6)
+            .margin_end(6)
+            .build();
+        let btn_show_in_files = flat_popover_button("folder-symbolic", "Показать в файлах");
+        let btn_delete = flat_popover_button("user-trash-symbolic", "Удалить запись");
+        btn_delete.add_css_class("destructive-action");
+        more_box.append(&btn_show_in_files);
+        more_box.append(&btn_delete);
+        more_popover.set_child(Some(&more_box));
+        btn_more.set_popover(Some(&more_popover));
         topbar.append(&btn_more);
 
         container.append(&topbar);
@@ -409,6 +426,74 @@ impl RecordingDetailPage {
                 if let Some(f) = cb.borrow().as_ref() {
                     f(rec.path);
                 }
+            });
+        }
+
+        // Wire More → Show in files (phase 19.b.10).
+        {
+            let current = this.current.clone();
+            btn_show_in_files.connect_clicked(move |_| {
+                let Some(rec) = current.borrow().clone() else {
+                    return;
+                };
+                if let Some(parent) = rec.path.parent() {
+                    let uri = format!("file://{}", parent.display());
+                    let _ =
+                        gio::AppInfo::launch_default_for_uri(&uri, gio::AppLaunchContext::NONE);
+                }
+            });
+        }
+        // Wire More → Delete with confirm (phase 19.b.10).
+        {
+            let current = this.current.clone();
+            let on_back = this.on_back.clone();
+            let root_weak = this.root.downgrade();
+            btn_delete.connect_clicked(move |_| {
+                let Some(rec) = current.borrow().clone() else {
+                    return;
+                };
+                let parent_win = root_weak
+                    .upgrade()
+                    .and_then(|w| w.root())
+                    .and_then(|r| r.downcast::<gtk::Window>().ok());
+                let dialog = gtk::MessageDialog::builder()
+                    .modal(true)
+                    .message_type(gtk::MessageType::Warning)
+                    .buttons(gtk::ButtonsType::None)
+                    .text("Удалить запись?")
+                    .secondary_text(&format!(
+                        "Файл «{}» и связанные транскрипты будут удалены безвозвратно.",
+                        rec.title
+                    ))
+                    .build();
+                dialog.add_button("Отмена", gtk::ResponseType::Cancel);
+                dialog.add_button("Удалить", gtk::ResponseType::Accept);
+                dialog.set_default_response(gtk::ResponseType::Cancel);
+                if let Some(w) = parent_win.as_ref() {
+                    dialog.set_transient_for(Some(w));
+                }
+                let path = rec.path.clone();
+                let on_back = on_back.clone();
+                dialog.connect_response(move |d, response| {
+                    d.close();
+                    if response != gtk::ResponseType::Accept {
+                        return;
+                    }
+                    let _ = std::fs::remove_file(&path);
+                    for ext in ["txt", "json", "srt", "vtt"] {
+                        let side = path.with_extension(ext);
+                        if side.is_file() {
+                            let _ = std::fs::remove_file(&side);
+                        }
+                    }
+                    // Удалить thumbnail из кеша тоже.
+                    let thumb = crate::library::thumb_path(&path);
+                    let _ = std::fs::remove_file(&thumb);
+                    if let Some(f) = on_back.borrow().as_ref() {
+                        f();
+                    }
+                });
+                dialog.present();
             });
         }
 
