@@ -17,6 +17,7 @@ use crate::recorder::{
     attach_bus_watch, build_pipeline, start as pipeline_start, stop_graceful, RecordRequest,
 };
 use crate::ui::events::{RecorderEvent, UiCommand};
+use crate::ui::pages::record::{self as rp, RecordPage};
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
@@ -42,14 +43,7 @@ impl UiRecordingState {
 
 pub struct AppShell {
     window: adw::ApplicationWindow,
-    btn_start_stop: gtk::Button,
-    lbl_status: gtk::Label,
-    lbl_timer: gtk::Label,
-    switch_screen: gtk::Switch,
-    switch_sys: gtk::Switch,
-    switch_mic: gtk::Switch,
-    switch_stt: gtk::Switch,
-    stt_spinner: gtk::Spinner,
+    page: RecordPage,
     lbl_rec_dot: gtk::Label,
     toast_overlay: adw::ToastOverlay,
     state: Rc<RefCell<UiRecordingState>>,
@@ -95,97 +89,18 @@ impl AppShell {
             .build();
         header.pack_end(&menu_button);
 
-        let root = gtk::Box::builder()
-            .orientation(gtk::Orientation::Vertical)
-            .spacing(12)
-            .margin_top(12)
-            .margin_bottom(12)
-            .margin_start(12)
-            .margin_end(12)
-            .build();
-
-        let group = adw::PreferencesGroup::new();
-
-        let row_screen = adw::ActionRow::builder().title("Экран").build();
-        let switch_screen = gtk::Switch::builder()
-            .valign(gtk::Align::Center)
-            .active(true)
-            .build();
-        row_screen.add_suffix(&switch_screen);
-        row_screen.set_activatable_widget(Some(&switch_screen));
-
-        let row_sys = adw::ActionRow::builder().title("Звук системы").build();
-        let switch_sys = gtk::Switch::builder()
-            .valign(gtk::Align::Center)
-            .active(true)
-            .build();
-        row_sys.add_suffix(&switch_sys);
-        row_sys.set_activatable_widget(Some(&switch_sys));
-
-        let row_mic = adw::ActionRow::builder().title("Микрофон").build();
-        let switch_mic = gtk::Switch::builder()
-            .valign(gtk::Align::Center)
-            .active(false)
-            .build();
-        row_mic.add_suffix(&switch_mic);
-        row_mic.set_activatable_widget(Some(&switch_mic));
-
-        let row_stt = adw::ActionRow::builder()
-            .title("Распознавание речи")
-            .subtitle("Сохраняет расшифровку в .txt рядом с видео (OpenAI)")
-            .build();
-        let switch_stt = gtk::Switch::builder()
-            .valign(gtk::Align::Center)
-            .active(settings.read().unwrap().transcription_enabled)
-            .build();
-        row_stt.add_suffix(&switch_stt);
-        row_stt.set_activatable_widget(Some(&switch_stt));
-
-        group.add(&row_screen);
-        group.add(&row_sys);
-        group.add(&row_mic);
-        group.add(&row_stt);
-        root.append(&group);
-
-        let btn_start_stop = gtk::Button::builder()
-            .label("Начать запись")
-            .halign(gtk::Align::Center)
-            .build();
-        btn_start_stop.add_css_class("suggested-action");
-        btn_start_stop.add_css_class("pill");
-        root.append(&btn_start_stop);
-
-        let lbl_timer = gtk::Label::new(Some("00:00:00"));
-        lbl_timer.add_css_class("title-2");
-        lbl_timer.add_css_class("timer-label");
-        lbl_timer.set_visible(false);
-        root.append(&lbl_timer);
-
-        let lbl_status = gtk::Label::new(Some("Готов"));
-        lbl_status.add_css_class("dim-label");
-
-        let stt_spinner = gtk::Spinner::new();
-        stt_spinner.set_visible(false);
-
-        let status_row = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .spacing(8)
-            .halign(gtk::Align::Center)
-            .build();
-        status_row.append(&stt_spinner);
-        status_row.append(&lbl_status);
-        root.append(&status_row);
+        // Record-страница (phase 19.a.4) живёт в отдельном модуле.
+        let page = rp::build(&settings);
 
         // Sidebar + content Stack layout (phase 19.a.3).
-        // The existing Record-page widgets go into stack child "record".
-        // Library / AI / Settings are placeholders for phases 19.a.6 / 19.b / 19.c.
+        // Library / AI / Settings — плейсхолдеры до подфаз 19.a.6 / 19.b / 19.c.
         let stack = gtk::Stack::builder()
             .transition_type(gtk::StackTransitionType::Crossfade)
             .transition_duration(150)
             .hexpand(true)
             .vexpand(true)
             .build();
-        stack.add_named(&root, Some("record"));
+        stack.add_named(&page.root, Some("record"));
         stack.add_named(&build_placeholder_page("Library", "Откроется в фазе 19.b."), Some("library"));
         stack.add_named(&build_placeholder_page("AI", "Откроется в фазе 19.c."), Some("ai"));
         stack.add_named(&build_placeholder_page("Settings", "Переедет из отдельного окна в фазе 19.a.6."), Some("settings"));
@@ -209,16 +124,12 @@ impl AppShell {
         main_box.append(&toast_overlay);
         window.set_content(Some(&main_box));
 
+        let btn_start_stop = page.btn_start_stop.clone();
+        let seg_auto = page.seg_auto.clone();
+
         let this = Rc::new(Self {
             window,
-            btn_start_stop: btn_start_stop.clone(),
-            lbl_status,
-            lbl_timer,
-            switch_screen,
-            switch_sys,
-            switch_mic,
-            switch_stt: switch_stt.clone(),
-            stt_spinner,
+            page,
             lbl_rec_dot,
             toast_overlay,
             state: Rc::new(RefCell::new(UiRecordingState::Idle)),
@@ -231,21 +142,19 @@ impl AppShell {
             settings,
         });
 
+        // Показываем toast-подсказку, если Auto выбрали без API-ключа.
         {
-            let settings = this.settings.clone();
             let weak_self = Rc::downgrade(&this);
-            switch_stt.connect_state_set(move |_w, new_state| {
-                settings.write().unwrap().transcription_enabled = new_state;
-                let snapshot = settings.read().unwrap().clone();
-                if let Err(e) = crate::config::save(&snapshot) {
-                    tracing::warn!(%e, "failed to persist transcription toggle");
+            seg_auto.connect_toggled(move |b| {
+                if !b.is_active() {
+                    return;
                 }
-                if new_state && snapshot.openai_api_key.trim().is_empty() {
-                    if let Some(me) = weak_self.upgrade() {
-                        me.show_toast("Укажите API-ключ OpenAI в Настройках");
-                    }
+                let Some(me) = weak_self.upgrade() else {
+                    return;
+                };
+                if me.settings.read().unwrap().openai_api_key.trim().is_empty() {
+                    me.show_toast("Укажите API-ключ OpenAI в Настройках");
                 }
-                glib::signal::Inhibit(false)
             });
         }
 
@@ -283,9 +192,12 @@ impl AppShell {
 
     pub fn sources_snapshot(&self) -> Sources {
         Sources {
-            screen: self.switch_screen.is_active(),
-            system_audio: self.switch_sys.is_active(),
-            microphone: self.switch_mic.is_active(),
+            // Источник видео — либо Screen либо Window (см. page.capture_source);
+            // capture_screen=true означает «записывай видео-поток», управление
+            // MONITOR vs WINDOW для portal произойдёт в 19.a.5.
+            screen: true,
+            system_audio: self.page.switch_sys.is_active(),
+            microphone: self.page.switch_mic.is_active(),
         }
     }
 
@@ -297,55 +209,58 @@ impl AppShell {
         *self.state.borrow_mut() = state;
         self.lbl_rec_dot
             .set_visible(matches!(state, UiRecordingState::Recording));
+        let btn = &self.page.btn_start_stop;
         match state {
             UiRecordingState::Idle => {
-                self.btn_start_stop.set_label("Начать запись");
-                self.btn_start_stop.set_sensitive(true);
-                self.btn_start_stop.remove_css_class("destructive-action");
-                self.btn_start_stop.add_css_class("suggested-action");
+                btn.set_child(Some(&rp::build_start_content("Начать запись")));
+                btn.set_sensitive(true);
+                btn.remove_css_class("destructive-action");
+                btn.add_css_class("suggested-action");
                 self.set_sources_sensitive(true);
             }
             UiRecordingState::Preparing => {
-                self.btn_start_stop.set_label("Подготовка…");
-                self.btn_start_stop.set_sensitive(false);
+                btn.set_child(Some(&gtk::Label::new(Some("Подготовка…"))));
+                btn.set_sensitive(false);
                 self.set_sources_sensitive(false);
             }
             UiRecordingState::Recording => {
-                self.btn_start_stop.set_label("Остановить");
-                self.btn_start_stop.set_sensitive(true);
-                self.btn_start_stop.remove_css_class("suggested-action");
-                self.btn_start_stop.add_css_class("destructive-action");
+                btn.set_child(Some(&gtk::Label::new(Some("Остановить"))));
+                btn.set_sensitive(true);
+                btn.remove_css_class("suggested-action");
+                btn.add_css_class("destructive-action");
                 self.set_sources_sensitive(false);
             }
             UiRecordingState::Finalizing => {
-                self.btn_start_stop.set_label("Сохранение…");
-                self.btn_start_stop.set_sensitive(false);
+                btn.set_child(Some(&gtk::Label::new(Some("Сохранение…"))));
+                btn.set_sensitive(false);
                 self.set_sources_sensitive(false);
             }
         }
     }
 
     fn set_sources_sensitive(&self, sensitive: bool) {
-        self.switch_screen.set_sensitive(sensitive);
-        self.switch_sys.set_sensitive(sensitive);
-        self.switch_mic.set_sensitive(sensitive);
-        self.switch_stt.set_sensitive(sensitive);
+        self.page.switch_sys.set_sensitive(sensitive);
+        self.page.switch_mic.set_sensitive(sensitive);
+        self.page.seg_auto.set_sensitive(sensitive);
+        self.page.seg_manual.set_sensitive(sensitive);
+        self.page.card_screen.set_sensitive(sensitive);
+        self.page.card_window.set_sensitive(sensitive);
     }
 
     pub fn transcription_enabled(&self) -> bool {
-        self.switch_stt.is_active()
+        self.page.seg_auto.is_active()
     }
 
     pub fn set_status(&self, text: &str) {
-        self.lbl_status.set_label(text);
+        self.page.lbl_status.set_label(text);
     }
 
     pub fn set_stt_busy(&self, busy: bool) {
-        self.stt_spinner.set_visible(busy);
+        self.page.stt_spinner.set_visible(busy);
         if busy {
-            self.stt_spinner.start();
+            self.page.stt_spinner.start();
         } else {
-            self.stt_spinner.stop();
+            self.page.stt_spinner.stop();
         }
     }
 
@@ -397,9 +312,9 @@ impl AppShell {
     pub fn start_timer(&self) {
         self.stop_timer();
         let started = Instant::now();
-        let lbl = self.lbl_timer.clone();
-        self.lbl_timer.set_visible(true);
-        self.lbl_timer.set_label("00:00:00");
+        let lbl = self.page.lbl_timer.clone();
+        self.page.lbl_timer.set_visible(true);
+        self.page.lbl_timer.set_label("00:00:00");
         let src = glib::timeout_add_seconds_local(1, move || {
             let secs = started.elapsed().as_secs();
             let h = secs / 3600;
@@ -415,8 +330,8 @@ impl AppShell {
         if let Some(src) = self.timer_source.borrow_mut().take() {
             src.remove();
         }
-        self.lbl_timer.set_visible(false);
-        self.lbl_timer.set_label("00:00:00");
+        self.page.lbl_timer.set_visible(false);
+        self.page.lbl_timer.set_label("00:00:00");
     }
 
     pub fn spawn_event_loop(self: &Rc<Self>, evt_rx: async_channel::Receiver<RecorderEvent>) {
