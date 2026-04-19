@@ -263,9 +263,62 @@ fn position_bottom_center(window: &gtk::Window, bottom_margin_pct: f64) {
     let margin = (screen_h as f64 * bottom_margin_pct).round() as i32;
     let y = geom.y() + screen_h - tb_h - margin;
 
-    let Some(id) = x11_window_id(window) else { return };
-    let _ = std::process::Command::new("xdotool")
-        .args(["windowmove", &id, &x.to_string(), &y.to_string()])
+    move_window_x11(&window.title().unwrap_or_default(), x, y);
+}
+
+/// Переместить X11-окно с указанным WM_NAME в (x, y). Предпочтительно xdotool;
+/// fallback — python3 с python-xlib (обычно есть на Ubuntu по умолчанию).
+fn move_window_x11(wm_name: &str, x: i32, y: i32) {
+    // 1) xdotool.
+    if std::process::Command::new("xdotool").arg("--help").output().is_ok() {
+        if let Ok(out) = std::process::Command::new("xdotool")
+            .args(["search", "--name", wm_name])
+            .output()
+        {
+            if let Some(id) = String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .next()
+                .map(|s| s.trim().to_owned())
+            {
+                if !id.is_empty() {
+                    let _ = std::process::Command::new("xdotool")
+                        .args(["windowmove", &id, &x.to_string(), &y.to_string()])
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .spawn();
+                    return;
+                }
+            }
+        }
+    }
+    // 2) python3 + python-xlib.
+    let script = r#"
+import sys
+from Xlib.display import Display
+d = Display()
+root = d.screen().root
+target = sys.argv[1]; x = int(sys.argv[2]); y = int(sys.argv[3])
+def walk(w, depth=0):
+    if depth > 4: return
+    try:
+        n = w.get_wm_name()
+        if isinstance(n, bytes):
+            n = n.decode('utf-8', 'replace')
+        if n == target:
+            w.configure(x=x, y=y)
+            d.sync()
+            sys.exit(0)
+    except Exception:
+        pass
+    try:
+        for c in w.query_tree().children:
+            walk(c, depth+1)
+    except Exception:
+        pass
+walk(root)
+"#;
+    let _ = std::process::Command::new("python3")
+        .args(["-c", script, wm_name, &x.to_string(), &y.to_string()])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn();
