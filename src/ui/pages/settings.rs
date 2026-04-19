@@ -565,6 +565,32 @@ fn build_hotkeys_group(
     hotkey_row.set_activatable_widget(Some(&entry));
     group.add(&hotkey_row);
 
+    // Остальные хоткеи — только отображение (регистрация в phase 9.1).
+    let display_only: &[(&str, &[&str])] = &[
+        ("Пауза / продолжить", &["Ctrl", "Shift", "P"]),
+        ("Открыть библиотеку", &["Ctrl", "L"]),
+    ];
+    for (label, keys) in display_only {
+        let row = adw::ActionRow::builder().title(*label).build();
+        let hbox = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(4)
+            .valign(gtk::Align::Center)
+            .build();
+        for (i, k) in keys.iter().enumerate() {
+            let chip = gtk::Label::new(Some(k));
+            chip.add_css_class("kbd");
+            hbox.append(&chip);
+            if i + 1 < keys.len() {
+                let plus = gtk::Label::new(Some("+"));
+                plus.add_css_class("dim-label");
+                hbox.append(&plus);
+            }
+        }
+        row.add_suffix(&hbox);
+        group.add(&row);
+    }
+
     group
 }
 
